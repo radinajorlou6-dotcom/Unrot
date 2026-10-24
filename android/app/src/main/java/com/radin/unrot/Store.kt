@@ -6,7 +6,17 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 
-data class Contact(val name: String, val phone: String)
+/**
+ * A family member. [via] is how you call them ("phone", "whatsapp", "telegram", …, see [CallApps]).
+ * [phone] is a phone number or @username (optional for app calls). [appName] is their name as it
+ * shows in that app's call notification, if different from [name].
+ */
+data class Contact(val name: String, val phone: String, val via: String = "phone", val appName: String = "") {
+    val app: CallApp get() = CallApps.byId(via)
+    val matchName: String get() = appName.ifBlank { name }
+    /** Cooldowns and "last called" are per person, whichever way you call them. */
+    val key: String get() = name.trim().lowercase()
+}
 data class Note(val type: String, val text: String, val ts: Long)
 data class LogLine(val text: String, val ts: Long)
 
@@ -137,12 +147,14 @@ class Store private constructor(ctx: Context) {
             val a = runCatching { JSONArray(str("family")) }.getOrNull() ?: return emptyList()
             return (0 until a.length()).map {
                 val o = a.getJSONObject(it)
-                Contact(o.optString("name"), o.optString("phone"))
+                Contact(o.optString("name"), o.optString("phone"), o.optString("via", "phone"), o.optString("appName"))
             }
         }
         set(v) {
             val a = JSONArray()
-            v.forEach { a.put(JSONObject().put("name", it.name).put("phone", it.phone)) }
+            v.forEach {
+                a.put(JSONObject().put("name", it.name).put("phone", it.phone).put("via", it.via).put("appName", it.appName))
+            }
             putStr("family", a.toString())
         }
 

@@ -201,7 +201,7 @@ class BlockActivity : Activity() {
             return
         }
         root.add(text("Call someone instead", 18f, bold = true))
-        val ordered = fam.map { it to Calls.lastCallWith(this@BlockActivity, it.phone) }
+        val ordered = fam.map { it to Calls.lastCallWith(this@BlockActivity, it) }
             .sortedBy { it.second ?: 0L }
         for ((c, last) in ordered.take(3)) {
             val card = card()
@@ -210,27 +210,30 @@ class BlockActivity : Activity() {
             info.add(text(c.name, 18f, bold = true), 2)
             info.add(text(lastCalledText(last), 14f, Col.MUTED), 0)
             r.addView(info, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-            r.addView(button("📞 Call", Ui.Style.PRIMARY) {
-                s.log("Called ${c.name} instead of scrolling")
-                Calls.call(this@BlockActivity, c.phone)
-                finish()
+            r.addView(button(if (c.via == "phone") "📞 Call" else "📞 ${c.app.label}", Ui.Style.PRIMARY) {
+                if (Calls.start(this@BlockActivity, c)) {
+                    s.log("Called ${c.name} instead of scrolling")
+                    finish()
+                } else {
+                    android.widget.Toast.makeText(this@BlockActivity, "${c.app.label} isn't installed.", android.widget.Toast.LENGTH_LONG).show()
+                }
             })
             card.add(r, 0)
             root.add(card)
         }
         val st = Rules.current(s)
-        root.add(text("A ${st.n("callMinMin")}+ min call with family earns ${st.n("callRewardMin")} min.", 13f, Col.MUTED))
+        root.add(text("A ${st.n("callMinMin")}+ min call with family (phone or app) earns ${st.n("callRewardMin")} min.", 13f, Col.MUTED))
     }
 
     /** Night fork: async kindness and getting thoughts out of your head. */
     private fun Ui.nightOptions(root: LinearLayout) {
         val fam = s.family
         if (fam.isNotEmpty()) {
-            val c = fam.map { it to Calls.lastCallWith(this@BlockActivity, it.phone) }
+            val c = fam.map { it to Calls.lastCallWith(this@BlockActivity, it) }
                 .minByOrNull { it.second ?: 0L }!!.first
             root.add(button("🎙️ Leave ${c.name} a voice note for the morning", Ui.Style.SECONDARY) {
                 s.log("Sent ${c.name} a voice note instead of scrolling")
-                Calls.voiceNote(this@BlockActivity, c.phone)
+                Calls.voiceNote(this@BlockActivity, c)
                 finish()
             })
         }

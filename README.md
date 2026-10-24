@@ -8,7 +8,7 @@ Scroll time you have to earn. Lock in, work out, or call family to earn minutes;
 |---|---|---|
 | Lock in (study/work timer) | 3 min → 1 min | Unrot's own timer |
 | Watch workouts (gym, soccer…) | 3 min → 1 min | Galaxy Watch → Health Connect |
-| Family call, 5+ min | +10 min, once per person every 3h | Android call log |
+| Family call, 5+ min | +10 min, once per person every 3h | Android call log (phone) or the app's ongoing-call notification + phone audio in call mode (WhatsApp, Telegram, imo, Messenger, Signal, Viber, Discord) |
 | Steps | +2 min per 1,000 (max 30/day) | Galaxy Watch |
 | Asleep by bedtime (6h+) | +15 min next morning | Galaxy Watch sleep tracking |
 | New best run pace (2+ km) | +15 min | Watch GPS distance |

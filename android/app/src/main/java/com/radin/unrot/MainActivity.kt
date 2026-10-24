@@ -276,6 +276,15 @@ class MainActivity : Activity() {
                 requestPermissions(arrayOf(Manifest.permission.READ_CALL_LOG, Manifest.permission.CALL_PHONE), REQ_PERMS)
             },
         )
+        val appCallers = s.family.filter { it.via != "phone" }
+        if (appCallers.isNotEmpty()) {
+            val apps = appCallers.map { it.app.label }.distinct().joinToString(", ")
+            steps += Step(
+                Setup.notificationAccessOn(ctx), "5b. $apps calls",
+                "Allow notification access so Unrot can see who an ongoing $apps call is with. It only looks at call notifications from calling apps. If it's greyed out, use \"Allow restricted settings\" in App info like step 1.",
+                "Allow notification access",
+            ) { open(Setup.notificationAccessIntent(ctx)) }
+        }
         if (hcAvailable) {
             steps += Step(
                 hcGranted, "6. Workouts, steps & sleep from your watch",
@@ -365,7 +374,7 @@ class MainActivity : Activity() {
         val ways = listOf(
             "🔒 Lock in: ${Rules.fmtRatio(st.focusRatio)} min → 1 min",
             "🏃 Watch workouts: ${Rules.fmtRatio(st.workoutRatio)} min → 1 min",
-            "📞 Family call (${st.n("callMinMin")}+ min): +${st.n("callRewardMin")} min, once per person every ${st.n("callCooldownH")}h",
+            "📞 Family call (${st.n("callMinMin")}+ min, phone or WhatsApp/Telegram/imo…): +${st.n("callRewardMin")} min, once per person every ${st.n("callCooldownH")}h",
             "👟 Every ${"%,d".format(st.n("stepsUnit"))} steps: +${st.n("stepsRewardMin")} min (max ${st.n("stepsCapMin")}/day)",
             "😴 Asleep by bedtime: +${st.n("sleepBonusMin")} min the next morning",
             "⚡ Beat your best run pace (2+ km): +${st.n("runPrBonusMin")} min",
@@ -469,7 +478,10 @@ class MainActivity : Activity() {
         val fam = s.family
         for (f in fam) {
             val r = row()
-            val t = text("${f.name}\n${f.phone}", 16f)
+            val how = if (f.via == "phone") "📞 ${f.phone}" else "📞 ${f.app.label}" +
+                (if (f.appName.isNotBlank()) " as \"${f.appName}\"" else "") +
+                (if (f.phone.isNotBlank()) " · ${f.phone}" else "")
+            val t = text("${f.name}\n$how", 16f)
             r.addView(t, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
             r.addView(button("Remove", Ui.Style.GHOST) {
                 s.family = s.family.filter { it != f }
@@ -480,22 +492,51 @@ class MainActivity : Activity() {
         c.add(button("+ Add family member", Ui.Style.SECONDARY) { addFamilyDialog() }, 0)
     }
 
+    /** Step 1: how do you call them? */
     private fun addFamilyDialog() {
+        val apps = CallApps.all
+        dialog().setTitle("How do you call them?")
+            .setItems(apps.map { if (it.id == "phone") "📞 Regular phone call" else it.label }.toTypedArray()) { _, i ->
+                addFamilyDetails(apps[i])
+            }
+            .setNegativeButton("Cancel", null).show()
+    }
+
+    /** Step 2: their details for that way of calling. */
+    private fun addFamilyDetails(app: CallApp) {
         val ui = Ui(this)
         val box = ui.col(16)
         val name = ui.input("Name (e.g. Mom)")
-        val phone = ui.input("Phone number").apply { inputType = InputType.TYPE_CLASS_PHONE }
         box.add(name)
-        box.add(phone)
-        dialog().setTitle("Add family member").setView(box)
+        val appName = if (app.id != "phone") ui.input("Their name in ${app.label} (leave blank if the same)") else null
+        appName?.let { box.add(it) }
+        val handle = app.handleHint?.let { hint ->
+            ui.input(hint).apply { if (app.id != "telegram") inputType = InputType.TYPE_CLASS_PHONE }
+        }
+        handle?.let { box.add(it) }
+        if (app.id != "phone") {
+            box.add(
+                ui.text(
+                    "Calls count when ${app.label}'s call notification shows this name, and only while the call is connected.",
+                    13f, Col.MUTED,
+                ), 0,
+            )
+        }
+        dialog().setTitle(if (app.id == "phone") "Add family member" else "Add family member (${app.label})").setView(box)
             .setPositiveButton("Add") { _, _ ->
                 val n = name.text.toString().trim()
-                val p = phone.text.toString().trim()
-                if (n.isNotEmpty() && Calls.norm(p).length >= 7) {
-                    s.family = s.family + Contact(n, p)
-                    render()
-                } else {
-                    Toast.makeText(this, "Need a name and a full phone number.", Toast.LENGTH_LONG).show()
+                val h = handle?.text?.toString()?.trim().orEmpty()
+                val an = appName?.text?.toString()?.trim().orEmpty()
+                when {
+                    n.isEmpty() -> Toast.makeText(this, "Need a name.", Toast.LENGTH_LONG).show()
+                    app.id == "phone" && Calls.norm(h).length < 7 -> Toast.makeText(this, "Need a full phone number.", Toast.LENGTH_LONG).show()
+                    else -> {
+                        s.family = s.family + Contact(n, h, app.id, an)
+                        if (app.id != "phone" && !Setup.notificationAccessOn(this)) {
+                            Toast.makeText(this, "Added. Do the new \"${app.label} calls\" setup step so calls count.", Toast.LENGTH_LONG).show()
+                        }
+                        render()
+                    }
                 }
             }
             .setNegativeButton("Cancel", null).show()

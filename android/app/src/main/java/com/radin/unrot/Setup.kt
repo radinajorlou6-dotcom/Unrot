@@ -43,6 +43,21 @@ object Setup {
         ctx.checkSelfPermission(Manifest.permission.READ_CALL_LOG) == PackageManager.PERMISSION_GRANTED &&
             ctx.checkSelfPermission(Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED
 
+    fun listenerComponent(ctx: Context) = ComponentName(ctx, CallListener::class.java)
+
+    fun notificationAccessOn(ctx: Context) = runCatching {
+        ctx.getSystemService(android.app.NotificationManager::class.java)
+            .isNotificationListenerAccessGranted(listenerComponent(ctx))
+    }.getOrDefault(false)
+
+    fun notificationAccessIntent(ctx: Context): Intent =
+        if (Build.VERSION.SDK_INT >= 30) {
+            Intent(AndroidSettings.ACTION_NOTIFICATION_LISTENER_DETAIL_SETTINGS)
+                .putExtra(AndroidSettings.EXTRA_NOTIFICATION_LISTENER_COMPONENT_NAME, listenerComponent(ctx).flattenToString())
+        } else {
+            Intent(AndroidSettings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
+        }
+
     fun adminOn(ctx: Context) =
         ctx.getSystemService(DevicePolicyManager::class.java).isAdminActive(adminComponent(ctx))
 

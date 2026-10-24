@@ -122,6 +122,17 @@
                 android:value="Keeps the scroll-time balance and app blocking running" />
         </service>
 
+        <!-- Sees WhatsApp/Telegram/imo call notifications so app calls with family can earn time -->
+        <service
+            android:name=".CallListener"
+            android:exported="true"
+            android:label="Unrot (family calls)"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
         <receiver
             android:name=".AdminReceiver"
             android:exported="true"
