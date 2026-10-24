@@ -395,24 +395,34 @@ class UnrotService : AccessibilityService() {
             bal <= 120 -> 0xEEFFB454.toInt() to 0xFF1F1405.toInt()
             else -> 0xE61A1E26.toInt() to Col.ACCENT
         }
-        h.removeCallbacks(hideRunnable)
+        cancelHide()
         v.setTextColor(fg)
         (v.background as? GradientDrawable)?.setColor(bg)
         v.visibility = View.VISIBLE
     }
 
-    private val hideRunnable = Runnable { pill?.visibility = View.GONE }
+    private var hideScheduled = false
+    private val hideRunnable = Runnable {
+        hideScheduled = false
+        pill?.visibility = View.GONE
+    }
 
     /** Hides the pill unless you're back within a moment, so brief blips don't make it flicker. */
     private fun hidePill() {
-        if (pill?.visibility == View.VISIBLE) {
-            h.removeCallbacks(hideRunnable)
+        // Schedule once; calling this again every second must not keep pushing the hide back.
+        if (pill?.visibility == View.VISIBLE && !hideScheduled) {
+            hideScheduled = true
             h.postDelayed(hideRunnable, 1500)
         }
     }
 
-    private fun hidePillNow() {
+    private fun cancelHide() {
         h.removeCallbacks(hideRunnable)
+        hideScheduled = false
+    }
+
+    private fun hidePillNow() {
+        cancelHide()
         pill?.visibility = View.GONE
     }
 
