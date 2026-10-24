@@ -45,7 +45,7 @@ jobs:
           dotnet-version: "8.0.x"
 
       - name: Build Unrot.exe
-        run: dotnet publish windows/Unrot.Desktop.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o out
+        run: dotnet publish windows/Unrot.Desktop.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -o out
 
       - uses: actions/upload-artifact@v4
         with:
