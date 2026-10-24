@@ -12,6 +12,36 @@ public class Settings
     /// <summary>Seconds you get to save before a game is closed.</summary>
     public int GraceSec { get; set; } = 30;
     public bool Protection { get; set; } = true;
+    /// <summary>Games and movie sites cost this % of normal (procrastinating, but engaging).</summary>
+    public int EngagingCostPct { get; set; } = 50;
+    public List<BlockedSite> Sites { get; set; } = BlockedSite.Defaults();
+}
+
+/// <summary>A site blocked in the browser. Matched by the tab title, since that's what Windows can see.</summary>
+public class BlockedSite
+{
+    public string Domain { get; set; }
+    /// <summary>Text that appears in the tab title, alternatives separated by |</summary>
+    public string Keywords { get; set; }
+    /// <summary>Movies/streaming: costs EngagingCostPct instead of full price.</summary>
+    public bool Half { get; set; }
+
+    public static List<BlockedSite> Defaults() => new()
+    {
+        new() { Domain = "youtube.com", Keywords = "YouTube" },
+        new() { Domain = "instagram.com", Keywords = "Instagram" },
+        new() { Domain = "x.com", Keywords = " / X|on X:" },
+        new() { Domain = "twitter.com", Keywords = "Twitter" },
+        new() { Domain = "tiktok.com", Keywords = "TikTok" },
+        new() { Domain = "reddit.com", Keywords = "Reddit|: r/" },
+        new() { Domain = "facebook.com", Keywords = "Facebook" },
+        new() { Domain = "snapchat.com", Keywords = "Snapchat" },
+        new() { Domain = "netflix.com", Keywords = "Netflix", Half = true },
+        new() { Domain = "disneyplus.com", Keywords = "Disney+", Half = true },
+        new() { Domain = "primevideo.com", Keywords = "Prime Video", Half = true },
+        new() { Domain = "crunchyroll.com", Keywords = "Crunchyroll", Half = true },
+        new() { Domain = "twitch.tv", Keywords = "Twitch", Half = true },
+    };
 }
 
 public class PendingChange
@@ -76,6 +106,7 @@ public static class Store
             S = new AppState();
         }
         S.Settings ??= new Settings();
+        S.Settings.Sites ??= BlockedSite.Defaults();
         S.Pending ??= new();
         S.ExtraGames ??= new();
         S.IgnoredGames ??= new();

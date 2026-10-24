@@ -19,9 +19,20 @@ import java.util.Date
 import java.util.Locale
 
 class MainActivity : Activity() {
+    companion object {
+        const val EXTRA_LOCKIN = "lockin"
+
+        /** Opens Unrot scrolled to the lock-in card. */
+        fun lockInIntent(ctx: android.content.Context): Intent = Intent(ctx, MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            .putExtra(EXTRA_LOCKIN, true)
+    }
+
     private val h = Handler(Looper.getMainLooper())
     private lateinit var s: Store
     private var balanceView: TextView? = null
+    private var focusClock: TextView? = null
+    private var focusWasActive = false
     private var hcAvailable = false
     private var hcGranted = false
     private var refreshing = false
@@ -34,6 +45,34 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         s = Store.get(this)
         Notif.ensureChannels(this)
+        addEngagingAppsOnce()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+    }
+
+    /**
+     * Games and streaming apps are blocked at a reduced cost by default, so procrastinating
+     * with something engaging is cheaper than doomscrolling. Runs once.
+     */
+    private fun addEngagingAppsOnce() {
+        if (s.p.getBoolean("engagingAdded", false)) return
+        val pm = packageManager
+        val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        val installed = pm.queryIntentActivities(launcher, 0).map { it.activityInfo.applicationInfo }
+            .distinctBy { it.packageName }
+        val engaging = installed.filter {
+            it.category == android.content.pm.ApplicationInfo.CATEGORY_GAME || it.packageName in Settings.STREAMING
+        }.map { it.packageName }.filter { it != packageName }.toSet()
+        if (engaging.isNotEmpty()) {
+            val st = Rules.current(s)
+            val newOnes = engaging - st.flagged
+            Rules.propose(s, st.copy(flagged = st.flagged + newOnes, halfRate = st.halfRate + newOnes))
+            s.log("Games & streaming apps added at ${st.n("engagingCostPct")}% cost")
+        }
+        s.p.edit().putBoolean("engagingAdded", true).apply()
     }
 
     override fun onResume() {
@@ -51,6 +90,13 @@ class MainActivity : Activity() {
     private val liveBalance = object : Runnable {
         override fun run() {
             balanceView?.text = balanceText()
+            val active = Ledger.focusActive(s)
+            if (active) focusClock?.text = Ledger.fmt(Ledger.focusRemainingSec(s))
+            if (active != focusWasActive) {
+                // A lock-in just ended (or started elsewhere): redraw so the card updates.
+                Ledger.settleFocus(s, Rules.current(s))
+                render()
+            }
             h.postDelayed(this, 1000)
         }
     }
@@ -93,14 +139,18 @@ class MainActivity : Activity() {
     private fun render() {
         val st = Rules.current(s)
         Ledger.ensureDailyBase(s, st)
+        focusWasActive = Ledger.focusActive(s)
+        focusClock = null
         setScreen { root ->
             header(root)
             crashCard(root)
+            lockInCard(root, st)
             setupCard(root)
             tomorrowCard(root)
             earnCard(root, st)
             activityCard(root)
             appsCard(root, st)
+            sitesCard(root, st)
             familyCard(root)
             rulesCard(root, st)
             pinCard(root)
@@ -132,6 +182,62 @@ class MainActivity : Activity() {
         if (!UnrotService.running && Setup.accessibilityOn(this@MainActivity)) {
             root.add(text("⚠️ The blocker isn't running right now. Turn Unrot off and on again in Accessibility settings.", 14f, Col.WARN))
         }
+    }
+
+    // ------------------------------------------------------------------ lock in
+
+    private fun Ui.lockInCard(root: LinearLayout, st: Settings) {
+        val c = section(root, "🔒 Lock in")
+        if (Ledger.focusActive(s)) {
+            val clock = text(Ledger.fmt(Ledger.focusRemainingSec(s)), 48f, Col.ACCENT, bold = true)
+            focusClock = clock
+            c.add(clock, 2)
+            if (Ledger.localFocusActive(s)) {
+                c.add(
+                    text(
+                        "Finish to earn ${Ledger.fmtShort((s.focusPlannedSec / st.focusRatio).toLong())}. " +
+                            "Your blocked apps and sites (and laptop games, if synced) are off until then.",
+                        14f, Col.MUTED,
+                    ), 10,
+                )
+                c.add(button("End early (earn nothing)", Ui.Style.DANGER) {
+                    dialog().setTitle("End early?")
+                        .setMessage("You'll lose the time you would have earned from this lock-in.")
+                        .setPositiveButton("End it") { _, _ ->
+                            Ledger.cancelFocus(s)
+                            syncNow()
+                            render()
+                        }
+                        .setNegativeButton("Keep going", null).show()
+                }, 0)
+            } else {
+                c.add(text("Started on your laptop. Blocked apps are off until it ends.", 14f, Col.MUTED), 0)
+            }
+            return
+        }
+        c.add(
+            text(
+                "Study, work, anything real. Every ${Rules.fmtRatio(st.focusRatio)} min earns 1 min, paid when the timer ends. " +
+                    "Blocked apps and sites are off until then.",
+                14f, Col.MUTED,
+            ), 10,
+        )
+        for (pair in listOf(listOf(25, 45), listOf(60, 90))) {
+            val r = row()
+            for (m in pair) {
+                r.addWeighted(button("$m min · +${Ledger.fmtShort((m * 60 / st.focusRatio).toLong())}", if (m == 25) Ui.Style.PRIMARY else Ui.Style.SECONDARY) {
+                    Ledger.startFocus(s, m)
+                    syncNow()
+                    Toast.makeText(this@MainActivity, "Locked in for $m min. Go do the thing 💪", Toast.LENGTH_LONG).show()
+                    render()
+                }, if (m == pair.last()) 0 else 8)
+            }
+            c.add(r, 8)
+        }
+    }
+
+    private fun syncNow() {
+        if (Sync.configured(s)) Thread { Sync.run(s) }.start()
     }
 
     // ------------------------------------------------------------------ setup checklist
@@ -264,9 +370,6 @@ class MainActivity : Activity() {
         ways.forEach { c.add(text(it, 14f, Col.MUTED), 4) }
         if (s.bestPace > 0) c.add(text("Best run pace: ${HealthSync.fmtPace(s.bestPace)}/km", 13f, Col.MUTED), 4)
         c.add(space(6))
-        c.add(button(if (Ledger.focusActive(s)) "🔒 See lock-in" else "🔒 Lock in", Ui.Style.PRIMARY) {
-            startActivity(Intent(this@MainActivity, FocusActivity::class.java))
-        })
         c.add(button("Check watch & calls now", Ui.Style.SECONDARY) { refreshInBackground(toast = true) })
         c.add(button("🏆 Check FitNotes for PRs", Ui.Style.SECONDARY) {
             dialog().setTitle("Check FitNotes for PRs")
@@ -324,6 +427,35 @@ class MainActivity : Activity() {
         c.add(text(if (installed.isEmpty()) "None of your blocked apps are installed yet." else installed.joinToString(" · "), 15f), 10)
         c.add(button("Edit blocked apps", Ui.Style.SECONDARY) {
             startActivity(Intent(this@MainActivity, AppPickerActivity::class.java))
+        }, 0)
+    }
+
+    private fun Ui.sitesCard(root: LinearLayout, st: Settings) {
+        val c = section(root, "Blocked sites")
+        c.add(
+            text(
+                "Work like blocked apps in Brave, Chrome and most other browsers. Time only counts while the site is on screen.",
+                14f, Col.MUTED,
+            ), 10,
+        )
+        for (d in st.sites.sorted()) {
+            val r = row()
+            r.addView(text(d, 16f), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            r.addView(button("Remove", Ui.Style.GHOST) { propose(st.copy(sites = st.sites - d)) })
+            c.add(r, 4)
+        }
+        c.add(button("+ Block a site", Ui.Style.SECONDARY) {
+            val ui2 = Ui(this@MainActivity)
+            val box = ui2.col(16)
+            val f = ui2.input("e.g. twitch.tv")
+            box.add(f)
+            dialog().setTitle("Block a site").setView(box)
+                .setPositiveButton("Block") { _, _ ->
+                    val d = f.text.toString().trim().lowercase()
+                        .substringAfter("://").substringBefore('/').removePrefix("www.").removePrefix("m.")
+                    if (d.contains('.')) propose(Rules.current(s).copy(sites = Rules.current(s).sites + d))
+                    else Toast.makeText(this@MainActivity, "That doesn't look like a website.", Toast.LENGTH_LONG).show()
+                }.setNegativeButton("Cancel", null).show()
         }, 0)
     }
 

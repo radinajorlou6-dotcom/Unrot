@@ -14,6 +14,7 @@ public class TrayApp : ApplicationContext
     long _ticks;
     long _lastClosedAt;
     bool _warned2, _warned30, _syncing;
+    double _spendAcc;
 
     public TrayApp()
     {
@@ -50,7 +51,7 @@ public class TrayApp : ApplicationContext
         }
         else
         {
-            Balloon("Unrot is running", $"{Ledger.Fmt(Math.Max(0, Ledger.Balance()))} of game time left.");
+            Balloon("Unrot is running", $"{Ledger.Fmt(Math.Max(0, Ledger.Balance()))} left.");
         }
     }
 
@@ -108,34 +109,39 @@ public class TrayApp : ApplicationContext
         var earned = Ledger.SettleFocus();
         if (earned >= 0)
         {
-            Balloon("Lock-in complete 🎉", $"+{Ledger.FmtShort(earned)} of game time.");
+            Balloon("Lock-in complete 🎉", $"+{Ledger.FmtShort(earned)} of time.");
             _ = SyncNow();
             _main?.Rebuild();
         }
 
         var fg = Games.ForegroundGame();
-        if (fg != null && (_block == null || _block.IsDisposed))
+        var site = fg == null ? Games.ForegroundSite() : null;
+        if ((fg != null || site != null) && (_block == null || _block.IsDisposed))
         {
-            Ledger.Spend(1);
+            // Games and movie sites cost less than doomscrolling.
+            var pct = Rules.Current().EngagingCostPct / 100.0;
+            _spendAcc += fg != null || site.Value.Site.Half ? pct : 1.0;
+            var whole = (long)_spendAcc;
+            if (whole > 0) { Ledger.Spend(whole); _spendAcc -= whole; }
             var bal = Ledger.Balance();
-            if (bal is > 0 and <= 120 && !_warned2) { _warned2 = true; Balloon("2 minutes of game time left", "Find a place to save."); }
+            if (bal is > 0 and <= 120 && !_warned2) { _warned2 = true; Balloon("2 minutes left", fg != null ? "Find a place to save." : "Wrap it up."); }
             if (bal is > 0 and <= 30 && !_warned30) { _warned30 = true; Balloon("30 seconds left", "Save now."); }
             if (bal > 180) { _warned2 = false; _warned30 = false; }
         }
 
-        Enforce(fg != null);
+        Enforce(fg != null, site);
 
         if (_ticks % 5 == 0)
         {
             Store.Save();
             var bal = Math.Max(0, Ledger.Balance());
-            var t = Ledger.FocusActive ? $"Unrot · locked in, {Ledger.Fmt(Ledger.FocusRemainingSec)} left" : $"Unrot · {Ledger.Fmt(bal)} of game time";
+            var t = Ledger.FocusActive ? $"Unrot · locked in, {Ledger.Fmt(Ledger.FocusRemainingSec)} left" : $"Unrot · {Ledger.Fmt(bal)} left";
             _icon.Text = t.Length > 63 ? t[..63] : t;
         }
         if (_ticks % 30 == 0) _ = SyncNow();
     }
 
-    void Enforce(bool gameInFront)
+    void Enforce(bool gameInFront, (IntPtr Hwnd, BlockedSite Site)? site)
     {
         var focus = Ledger.FocusActive;
         var bal = Ledger.Balance();
@@ -146,13 +152,31 @@ public class TrayApp : ApplicationContext
             if (_block != null && !_block.IsDisposed && !_block.Finished) _block.Close();
             return;
         }
-        if (!gameInFront) return;
+        if (!gameInFront && site == null) return;
         if (_block != null && !_block.IsDisposed) return;
 
         var st = Rules.Current();
+        if (!gameInFront)
+        {
+            var s = site.Value;
+            _block = new BlockForm(
+                focus ? "You're locked in 🔒" : "Out of time ⏳",
+                $"{s.Site.Domain} is blocked right now. This tab closes in a moment.",
+                Store.Now - _lastClosedAt < 10 * 60_000 ? 3 : 10,
+                onExpire: () =>
+                {
+                    Games.CloseTab(s.Hwnd);
+                    _lastClosedAt = Store.Now;
+                    Store.AddLog($"Closed a {s.Site.Domain} tab" + (focus ? " during a lock-in" : ", out of time"));
+                },
+                onLockIn: () => ShowMain());
+            _block.Show();
+            _block.Activate();
+            return;
+        }
         // If you relaunch right after a game was closed, there's barely any grace period.
         var grace = Store.Now - _lastClosedAt < 10 * 60_000 ? 5 : Math.Max(5, st.GraceSec);
-        var title = focus ? "You're locked in 🔒" : "Out of game time ⏳";
+        var title = focus ? "You're locked in 🔒" : "Out of time ⏳";
         var body = focus
             ? $"{Ledger.Fmt(Ledger.FocusRemainingSec)} left in your lock-in. Games close in a moment."
             : $"Every {Ledger.FmtRatio(st.FocusRatio)} min locked in earns 1 min of game time. Save now, your game closes in a moment.";

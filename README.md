@@ -18,6 +18,12 @@ Every number is adjustable in Unrot → Rules (loosening waits 24h).
 
 **FitNotes PRs:** after your workout, export from FitNotes as a CSV (spreadsheet) and share it to **"Unrot: check for PRs"**, or use **Check FitNotes for PRs** in Unrot and pick the file.
 
+**Games & movies cost half.** Installed games and streaming apps (Netflix, Disney+, Prime Video, Crunchyroll…) are blocked at 50% cost, so procrastinating with something engaging is cheaper than doomscrolling. On the laptop, games and movie sites (Netflix, Twitch…) cost 50% too. Adjustable; the ½ toggle is in Edit blocked apps.
+
+**Blocked sites.** youtube.com, instagram.com, x.com, tiktok.com, reddit.com and co. are blocked in Brave, Chrome and most phone browsers, and in Vivaldi/Chrome/Edge/Brave/Firefox on the laptop. They only cost time while the site is on screen. On the laptop, the tab closes when you run out.
+
+**Lock in** lives at the top of the main Unrot screen.
+
 **When you open a blocked app** you get a card with your balance and a family-call suggestion. "Continue" unlocks after 15 seconds (adjustable), and the card is skipped if you were in that app in the last 2 minutes. While you're in, a countdown pill stays on screen (drag it anywhere).
 
 ---

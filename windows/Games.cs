@@ -13,6 +13,16 @@ public static class Games
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     static extern bool QueryFullProcessImageName(IntPtr h, int flags, StringBuilder name, ref int size);
     [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int max);
+    [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    static readonly string[] Browsers =
+    {
+        "vivaldi.exe", "chrome.exe", "msedge.exe", "brave.exe", "firefox.exe", "opera.exe", "opera_gx.exe", "arc.exe",
+    };
+
+    /// <summary>Search result pages mention site names too; those shouldn't count.</summary>
+    static readonly string[] SearchPages = { "- Google Search", "- Search", "- Bing", "at DuckDuckGo" };
 
     const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
 
@@ -73,6 +83,39 @@ public static class Games
         if (pid == 0 || pid == (uint)Environment.ProcessId) return null;
         var path = ExePath(pid);
         return IsGame(path) ? ((int)pid, path) : null;
+    }
+
+    /// <summary>The blocked site in the browser tab that's in front, if any.</summary>
+    public static (IntPtr Hwnd, BlockedSite Site)? ForegroundSite()
+    {
+        var hwnd = GetForegroundWindow();
+        if (hwnd == IntPtr.Zero) return null;
+        GetWindowThreadProcessId(hwnd, out var pid);
+        if (pid == 0) return null;
+        var exe = Path.GetFileName(ExePath(pid) ?? "").ToLowerInvariant();
+        if (!Browsers.Contains(exe)) return null;
+        var sb = new StringBuilder(512);
+        GetWindowText(hwnd, sb, sb.Capacity);
+        var title = sb.ToString();
+        if (title.Length == 0 || SearchPages.Any(title.Contains)) return null;
+        foreach (var site in Store.S.Settings.Sites)
+        {
+            var keys = (site.Keywords ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries);
+            if (keys.Any(k => title.Contains(k, StringComparison.OrdinalIgnoreCase))) return (hwnd, site);
+        }
+        return null;
+    }
+
+    /// <summary>Closes the browser tab that's showing a blocked site (Ctrl+W).</summary>
+    public static void CloseTab(IntPtr hwnd)
+    {
+        try
+        {
+            SetForegroundWindow(hwnd);
+            Thread.Sleep(150);
+            SendKeys.SendWait("^w");
+        }
+        catch { }
     }
 
     public static List<(int Pid, string Path)> Running()

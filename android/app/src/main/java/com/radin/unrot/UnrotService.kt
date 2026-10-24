@@ -57,6 +57,21 @@ class UnrotService : AccessibilityService() {
         }
 
         const val NIGHT_PASS_MIN = 15
+
+        /** Where each browser keeps its address bar, so blocked sites can be spotted. */
+        val URL_BAR_IDS = mapOf(
+            "com.android.chrome" to "com.android.chrome:id/url_bar",
+            "com.chrome.beta" to "com.chrome.beta:id/url_bar",
+            "com.brave.browser" to "com.brave.browser:id/url_bar",
+            "com.brave.browser_beta" to "com.brave.browser_beta:id/url_bar",
+            "com.vivaldi.browser" to "com.vivaldi.browser:id/url_bar",
+            "com.microsoft.emmx" to "com.microsoft.emmx:id/url_bar",
+            "com.opera.browser" to "com.opera.browser:id/url_field",
+            "com.opera.gx" to "com.opera.gx:id/addressbarEdit",
+            "com.sec.android.app.sbrowser" to "com.sec.android.app.sbrowser:id/location_bar_edit_text",
+            "org.mozilla.firefox" to "org.mozilla.firefox:id/mozac_browser_toolbar_url_view",
+            "com.duckduckgo.mobile.android" to "com.duckduckgo.mobile.android:id/omnibarTextInput",
+        )
     }
 
     private val h = Handler(Looper.getMainLooper())
@@ -72,6 +87,9 @@ class UnrotService : AccessibilityService() {
     private var warnedLow = false
     private var bgBusy = false
     private var pill: TextView? = null
+    private var currentSite: String? = null
+    private var lastUrlCheck = 0L
+    private var spendAcc = 0.0
     private var pillParams: WindowManager.LayoutParams? = null
 
     private val ignoredPkgs = setOf("com.android.systemui", "android")
@@ -136,23 +154,74 @@ class UnrotService : AccessibilityService() {
         if (e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
             if (pkg !in ignoredPkgs && pkg !in imePkgs && pkg != currentPkg) onForeground(pkg)
         }
+        if (pkg == currentPkg && pkg in URL_BAR_IDS) {
+            val now = System.currentTimeMillis()
+            if (now - lastUrlCheck > 600) {
+                lastUrlCheck = now
+                refreshSite()
+            }
+        }
         if (pkg in guardPkgs) guard(pkg)
     }
 
     /** Called whenever a different app comes to the front. */
     private fun onForeground(pkg: String) {
         currentPkg = pkg
+        currentSite = null
+        if (pkg in URL_BAR_IDS) refreshSite(notify = false)
+        onKeyChanged()
+    }
+
+    /**
+     * What you're "in" right now: a blocked site inside a browser counts as its own app
+     * ("site:youtube.com"), everything else is the app's package name.
+     */
+    private fun currentKey(): String? {
+        val pkg = currentPkg ?: return null
+        val site = currentSite
+        return if (pkg in URL_BAR_IDS && site != null) "site:$site" else pkg
+    }
+
+    private fun isBlocked(key: String, st: Settings) = key.startsWith("site:") || key in st.flagged
+
+    private fun onKeyChanged() {
+        val key = currentKey() ?: return
         val st = Rules.current(s)
-        if (pkg in st.flagged) {
+        if (isBlocked(key, st)) {
             val now = System.currentTimeMillis()
-            if (now - (lastInApp[pkg] ?: 0L) > INTRO_SKIP_MS) introPending = pkg
+            if (now - (lastInApp[key] ?: 0L) > INTRO_SKIP_MS) introPending = key
             if (isScreenUsable()) {
-                updatePill(st)
-                evaluate(pkg, st)
+                updatePill(st, key)
+                evaluate(key, st)
             }
         } else {
             hidePill()
         }
+    }
+
+    /** Reads the browser's address bar and checks it against your blocked sites. */
+    private fun refreshSite(notify: Boolean = true) {
+        val pkg = currentPkg ?: return
+        val st = Rules.current(s)
+        val (found, site) = readSite(pkg, st)
+        if (!found) return // Address bar hidden (e.g. fullscreen video): keep what we had.
+        if (site != currentSite) {
+            currentSite = site
+            if (notify) onKeyChanged()
+        }
+    }
+
+    private fun readSite(pkg: String, st: Settings): Pair<Boolean, String?> {
+        val id = URL_BAR_IDS[pkg] ?: return false to null
+        val root = runCatching { rootInActiveWindow }.getOrNull() ?: return false to null
+        if (root.packageName?.toString() != pkg) return false to null
+        val node = runCatching { root.findAccessibilityNodeInfosByViewId(id) }.getOrNull()?.firstOrNull()
+            ?: return false to null
+        if (node.isFocused) return false to null // You're typing in it, not on a page.
+        val raw = node.text?.toString()?.trim()?.lowercase() ?: return true to null
+        val host = raw.substringAfter("://").substringBefore('/').substringBefore('?').substringBefore(':')
+            .removePrefix("www.").removePrefix("m.").removePrefix("mobile.")
+        return true to st.sites.firstOrNull { host == it || host.endsWith(".$it") }
     }
 
     private fun isScreenUsable(): Boolean {
@@ -191,15 +260,23 @@ class UnrotService : AccessibilityService() {
             val activePkg = runCatching { rootInActiveWindow?.packageName?.toString() }.getOrNull()
             if (activePkg != null && activePkg !in ignoredPkgs && activePkg !in imePkgs && activePkg != currentPkg) {
                 onForeground(activePkg)
+            } else if (activePkg != null && activePkg == currentPkg && activePkg in URL_BAR_IDS) {
+                refreshSite()
             }
         }
 
-        val pkg = currentPkg
-        val usingFlagged = pkg != null && pkg in st.flagged && isScreenUsable()
+        val key = currentKey()
+        val usingFlagged = key != null && isBlocked(key, st) && isScreenUsable()
 
         if (usingFlagged) {
-            Ledger.spend(s, 1)
-            lastInApp[pkg!!] = now
+            // Games and movies cost less than doomscrolling.
+            spendAcc += if (key!! in st.halfRate) st.n("engagingCostPct") / 100.0 else 1.0
+            val whole = spendAcc.toLong()
+            if (whole > 0) {
+                Ledger.spend(s, whole)
+                spendAcc -= whole
+            }
+            lastInApp[key] = now
             if (now - lastFlaggedAt > 60_000) {
                 continuousSec = 0
                 nextCheckInAt = if (st.checkInMin > 0) st.checkInMin * 60L else Long.MAX_VALUE
@@ -216,8 +293,8 @@ class UnrotService : AccessibilityService() {
                 Notif.alert(this, "1 minute of scroll time left", "Wrap it up, or lock in to earn more.")
             }
             if (bal > 120) warnedLow = false
-            updatePill(st)
-            evaluate(pkg, st)
+            updatePill(st, key)
+            evaluate(key, st)
         } else {
             hidePill()
         }
@@ -293,10 +370,11 @@ class UnrotService : AccessibilityService() {
     // ------------------------------------------------------------------ the countdown pill
 
     /** A small always-on countdown over blocked apps. Drag it anywhere; it can't be hidden. */
-    private fun updatePill(st: Settings) {
+    private fun updatePill(st: Settings, key: String) {
         val bal = Ledger.balanceSec(s)
         val v = pill ?: createPill() ?: return
-        v.text = "⏳ " + Ledger.fmt(maxOf(0L, bal))
+        val half = key in st.halfRate
+        v.text = "⏳ " + Ledger.fmt(maxOf(0L, bal)) + if (half) " · ${st.n("engagingCostPct")}%" else ""
         val (bg, fg) = when {
             bal <= 30 -> 0xEEFF6B6B.toInt() to 0xFF1A0505.toInt()
             bal <= 120 -> 0xEEFFB454.toInt() to 0xFF1F1405.toInt()

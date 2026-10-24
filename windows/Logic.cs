@@ -134,9 +134,16 @@ public static class Rules
             case "maxBankMin": s.MaxBankMin = int.Parse(v); break;
             case "graceSec": s.GraceSec = int.Parse(v); break;
             case "protection": s.Protection = bool.Parse(v); break;
+            case "engagingCostPct": s.EngagingCostPct = int.Parse(v); break;
             default:
                 if (key.StartsWith("ignore:")) Store.S.IgnoredGames.Add(key["ignore:".Length..]);
                 else if (key.StartsWith("unextra:")) Store.S.ExtraGames.RemoveAll(g => Same(g, key["unextra:".Length..]));
+                else if (key.StartsWith("unsite:")) s.Sites.RemoveAll(x => Same(x.Domain, key["unsite:".Length..]));
+                else if (key.StartsWith("halfsite:"))
+                {
+                    var site = s.Sites.FirstOrDefault(x => Same(x.Domain, key["halfsite:".Length..]));
+                    if (site != null) site.Half = true;
+                }
                 break;
         }
     }
@@ -158,10 +165,12 @@ public static class Rules
         return true;
     }
 
-    public static int ProposeSettings(double focusRatio, int maxBankMin, int graceSec, bool protection)
+    public static int ProposeSettings(double focusRatio, int maxBankMin, int graceSec, bool protection, int engagingPct)
     {
         var old = Current();
         int delayed = 0;
+        if (engagingPct != old.EngagingCostPct && !Change("engagingCostPct", engagingPct.ToString(),
+                engagingPct < old.EngagingCostPct, $"Games & movies cost → {engagingPct}%")) delayed++;
         if (focusRatio != old.FocusRatio && !Change("focusRatio", focusRatio.ToString(CultureInfo.InvariantCulture),
                 focusRatio < old.FocusRatio, $"Lock-in ratio → {Ledger.FmtRatio(focusRatio)}:1")) delayed++;
         if (maxBankMin != old.MaxBankMin && !Change("maxBankMin", maxBankMin.ToString(),
@@ -186,6 +195,31 @@ public static class Rules
 
     public static bool IgnoreGame(string path) =>
         Change("ignore:" + path, "1", true, "Not a game: " + Path.GetFileName(path));
+
+    public static void AddSite(string domain, string keywords, bool half)
+    {
+        Store.S.Pending.RemoveAll(p => p.Key == "unsite:" + domain);
+        var existing = Store.S.Settings.Sites.FirstOrDefault(x => Same(x.Domain, domain));
+        if (existing != null) { existing.Keywords = keywords; }
+        else Store.S.Settings.Sites.Add(new BlockedSite { Domain = domain, Keywords = keywords, Half = half });
+        Store.AddLog("Now blocking " + domain);
+    }
+
+    public static bool RemoveSite(string domain) =>
+        Change("unsite:" + domain, "1", true, "Unblock " + domain);
+
+    /// <summary>Full price is instant; making a site cheaper waits.</summary>
+    public static bool ToggleSiteHalf(BlockedSite site)
+    {
+        if (site.Half)
+        {
+            site.Half = false;
+            Store.S.Pending.RemoveAll(p => p.Key == "halfsite:" + site.Domain);
+            Store.Save();
+            return true;
+        }
+        return Change("halfsite:" + site.Domain, "1", true, $"{site.Domain} costs {Store.S.Settings.EngagingCostPct}%");
+    }
 
     public static void Cancel(string key)
     {

@@ -120,7 +120,7 @@ public class MainForm : Form
 
         // ---- Games
         Section("Games");
-        Add(L("Anything from Steam, Epic, Riot, Xbox, EA, Ubisoft, GOG, Rockstar or Roblox counts automatically. Time only counts while the game window is in front.", 10, Theme.Muted));
+        Add(L($"Anything from Steam, Epic, Riot, Xbox, EA, Ubisoft, GOG, Rockstar or Roblox counts automatically, at {st.EngagingCostPct}% of the normal cost. Time only counts while the game window is in front.", 10, Theme.Muted));
         var running = Games.Running();
         if (running.Count > 0)
         {
@@ -154,6 +154,39 @@ public class MainForm : Form
             if (dlg.ShowDialog() == DialogResult.OK) { Rules.AddGame(dlg.FileName); Rebuild(); }
         }));
 
+        // ---- Sites
+        Section("Blocked sites");
+        Add(L($"Counted while the tab is in front in Vivaldi, Chrome, Edge, Brave, Firefox or Opera. Movie sites (½) cost {st.EngagingCostPct}%. When you're out of time, the tab closes.", 10, Theme.Muted));
+        foreach (var site in st.Sites.ToList())
+        {
+            var r = Row();
+            r.Controls.Add(L($"{site.Domain}{(site.Half ? $"  ({st.EngagingCostPct}%)" : "")}", 10));
+            r.Controls.Add(Theme.Button(site.Half ? "Make full price" : $"Make {st.EngagingCostPct}%", () =>
+            {
+                var now = Rules.ToggleSiteHalf(site);
+                if (!now) MessageBox.Show("That makes it cheaper, so it kicks in 24 hours from now.", "Unrot");
+                Rebuild();
+            }));
+            r.Controls.Add(Theme.Button("Remove", () =>
+            {
+                var now = Rules.RemoveSite(site.Domain);
+                MessageBox.Show(now ? "Removed." : "It'll be unblocked in 24 hours (the PIN skips the wait).", "Unrot");
+                Rebuild();
+            }));
+        }
+        Row().Controls.Add(Theme.Button("Block a site…", () =>
+        {
+            var d = Prompt.Ask("Block a site", "Website (e.g. twitch.tv):");
+            if (string.IsNullOrWhiteSpace(d)) return;
+            d = d.Trim().ToLowerInvariant().Replace("https://", "").Replace("http://", "").Replace("www.", "").Split('/')[0];
+            var guess = d.Split('.')[0];
+            guess = guess.Length > 0 ? char.ToUpper(guess[0]) + guess[1..] : d;
+            var k = Prompt.Ask("Block a site", "A word that appears in that site's tab title:", initial: guess);
+            if (string.IsNullOrWhiteSpace(k)) return;
+            Rules.AddSite(d, k.Trim(), false);
+            Rebuild();
+        }));
+
         // ---- Rules
         Section("Rules");
         Add(L(Pin.Unlocked ? "🔓 PIN unlocked: changes apply right away." :
@@ -161,14 +194,16 @@ public class MainForm : Form
         var ratio = Num(st.FocusRatio, 0.1m, 100, 1);
         var bank = Num(st.MaxBankMin, 5, 1440, 0);
         var grace = Num(st.GraceSec, 5, 600, 0);
+        var engaging = Num(st.EngagingCostPct, 10, 100, 0);
         var prot = new CheckBox { Text = "Protection on", Checked = st.Protection, ForeColor = Theme.Text, AutoSize = true };
+        Labeled("Games & movie sites cost (% of normal)", engaging);
         Labeled("Minutes locked in per 1 min of game time", ratio);
         Labeled("Most game time you can save up (min)", bank);
         Labeled("Seconds to save before a game closes", grace);
         Add(prot);
         Row().Controls.Add(Theme.Button("Save rules", () =>
         {
-            var delayed = Rules.ProposeSettings((double)ratio.Value, (int)bank.Value, (int)grace.Value, prot.Checked);
+            var delayed = Rules.ProposeSettings((double)ratio.Value, (int)bank.Value, (int)grace.Value, prot.Checked, (int)engaging.Value);
             MessageBox.Show(delayed > 0 ? "Saved. Looser changes kick in 24 hours from now." : "Saved.", "Unrot");
             Rebuild();
         }, true));

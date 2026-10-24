@@ -22,6 +22,10 @@ data class Settings(
     val flagged: Set<String> = DEFAULT_FLAGGED,
     /** All the simple whole-number rules (see [NumRules]); missing keys use their defaults. */
     val nums: Map<String, Int> = emptyMap(),
+    /** Blocked apps that cost less (games, movies): see the engagingCostPct rule. */
+    val halfRate: Set<String> = emptySet(),
+    /** Blocked websites (in Brave, Chrome and other browsers). */
+    val sites: Set<String> = DEFAULT_SITES,
 ) {
     val bedtimeOn: Boolean get() = bedStart != bedEnd
 
@@ -49,6 +53,8 @@ data class Settings(
         .put("protection", protection)
         .put("flagged", JSONArray().also { a -> flagged.forEach { a.put(it) } })
         .put("nums", JSONObject().also { o -> nums.forEach { (k, v) -> o.put(k, v) } })
+        .put("halfRate", JSONArray().also { a -> halfRate.forEach { a.put(it) } })
+        .put("sites", JSONArray().also { a -> sites.forEach { a.put(it) } })
 
     companion object {
         val DEFAULT_FLAGGED = setOf(
@@ -60,6 +66,18 @@ data class Settings(
             "com.twitter.android",
             "com.snapchat.android",
             "com.facebook.katana",
+        )
+
+        val DEFAULT_SITES = setOf(
+            "youtube.com", "instagram.com", "x.com", "twitter.com", "tiktok.com",
+            "reddit.com", "facebook.com", "snapchat.com",
+        )
+
+        /** Streaming apps that count as "engaging" (cheaper) by default. Installed games are added too. */
+        val STREAMING = setOf(
+            "com.netflix.mediaclient", "com.disney.disneyplus", "com.amazon.avod.thirdpartyclient",
+            "com.crunchyroll.crunchyroid", "com.wbd.stream", "com.hbo.hbonow", "com.apple.atve.androidtv.appletv",
+            "ca.bell.fiberemote.crave", "com.crave.android",
         )
 
         fun fromJson(raw: String): Settings {
@@ -79,6 +97,8 @@ data class Settings(
                 countWalks = o.optBoolean("countWalks", d.countWalks),
                 protection = o.optBoolean("protection", d.protection),
                 flagged = if (fl == null) d.flagged else (0 until fl.length()).map { fl.getString(it) }.toSet(),
+                halfRate = o.optJSONArray("halfRate")?.let { a -> (0 until a.length()).map { a.getString(it) }.toSet() } ?: emptySet(),
+                sites = o.optJSONArray("sites")?.let { a -> (0 until a.length()).map { a.getString(it) }.toSet() } ?: d.sites,
                 nums = o.optJSONObject("nums")?.let { n -> n.keys().asSequence().associateWith { n.optInt(it) } } ?: emptyMap(),
             )
         }
@@ -145,6 +165,8 @@ object Rules {
         key == "protection" -> st.copy(protection = v.toBoolean())
         key.startsWith("unflag:") -> st.copy(flagged = st.flagged - key.removePrefix("unflag:"))
         key.startsWith("num:") -> st.withNum(key.removePrefix("num:"), v.toInt())
+        key.startsWith("half:") -> st.copy(halfRate = st.halfRate + key.removePrefix("half:"))
+        key.startsWith("unsite:") -> st.copy(sites = st.sites - key.removePrefix("unsite:"))
         else -> st
     }
 
@@ -218,6 +240,29 @@ object Rules {
             handle("unflag:$pkg", "0", "1", true, "Unblock ${labelFor(pkg)}")
         }
 
+        // Making an app full price is instant. Making an already-blocked app cheaper waits.
+        val fullAgain = old.halfRate - new.halfRate
+        if (fullAgain.isNotEmpty()) {
+            st = st.copy(halfRate = st.halfRate - fullAgain)
+            fullAgain.forEach { pkg -> pend.removeAll { it.key == "half:$pkg" } }
+            applied += fullAgain.size
+        }
+        for (pkg in new.halfRate - old.halfRate) {
+            val wasFullPrice = pkg in old.flagged
+            handle("half:$pkg", "0", "1", wasFullPrice, "${labelFor(pkg)} costs ${new.n("engagingCostPct")}%")
+        }
+
+        // Sites: same idea as apps.
+        val newSites = new.sites - old.sites
+        if (newSites.isNotEmpty()) {
+            st = st.copy(sites = st.sites + newSites)
+            newSites.forEach { d -> pend.removeAll { it.key == "unsite:$d" } }
+            applied += newSites.size
+        }
+        for (d in old.sites - new.sites) {
+            handle("unsite:$d", "0", "1", true, "Unblock $d")
+        }
+
         save(s, st, pend)
         Result(applied, delayed)
     }
@@ -240,12 +285,14 @@ data class NumRule(
     fun fmt(v: Int) = when {
         unit == "steps" -> "%,d steps".format(v)
         unit.isEmpty() -> v.toString()
+        unit == "%" -> "$v%"
         else -> "$v $unit"
     }
 }
 
 object NumRules {
     val all = listOf(
+        NumRule("engagingCostPct", "Games & movies cost (% of normal)", 50, 10, 100, false, "%"),
         NumRule("introWaitSec", "Wait before \"Continue\" on the opening card", 15, 0, 300, false, "s"),
         NumRule("callRewardMin", "Minutes earned per family call", 10, 1, 60, true, "min"),
         NumRule("callMinMin", "Shortest call that counts", 5, 1, 60, false, "min"),

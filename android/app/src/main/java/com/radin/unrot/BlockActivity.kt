@@ -62,7 +62,7 @@ class BlockActivity : Activity() {
         finish()
     }
 
-    private fun appName(p: String): String = runCatching {
+    private fun appName(p: String): String = if (p.startsWith("site:")) p.removePrefix("site:") else runCatching {
         packageManager.getApplicationLabel(packageManager.getApplicationInfo(p, 0)).toString()
     }.getOrDefault("that app")
 
@@ -94,7 +94,7 @@ class BlockActivity : Activity() {
                     if (night) nightOptions(root) else dayOptions(root)
                     root.add(space(8))
                     root.add(button("Lock in and earn time", Ui.Style.PRIMARY) {
-                        startActivity(Intent(this@BlockActivity, FocusActivity::class.java)); finish()
+                        startActivity(MainActivity.lockInIntent(this@BlockActivity)); finish()
                     })
                     root.add(button("Leave", Ui.Style.GHOST) { goHome() })
                 }
@@ -135,7 +135,7 @@ class BlockActivity : Activity() {
                     if (night) nightOptions(root) else dayOptions(root)
                     root.add(space(6))
                     root.add(button("🔒 Lock in instead", Ui.Style.SECONDARY) {
-                        startActivity(Intent(this@BlockActivity, FocusActivity::class.java)); finish()
+                        startActivity(MainActivity.lockInIntent(this@BlockActivity)); finish()
                     })
                     root.add(button("Leave", Ui.Style.GHOST) { goHome() })
                     val cont = button("", Ui.Style.PRIMARY) {
