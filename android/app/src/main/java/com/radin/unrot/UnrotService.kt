@@ -118,7 +118,7 @@ class UnrotService : AccessibilityService() {
     }
 
     override fun onDestroy() {
-        hidePill()
+        hidePillNow()
         running = false
         h.removeCallbacks(tick)
         super.onDestroy()
@@ -152,7 +152,11 @@ class UnrotService : AccessibilityService() {
         if (e == null || !::s.isInitialized) return
         val pkg = e.packageName?.toString() ?: return
         if (e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-            if (pkg !in ignoredPkgs && pkg !in imePkgs && pkg != currentPkg) onForeground(pkg)
+            // Only real app screens count as switching apps. Popups, menus, toasts and
+            // Unrot's own countdown pill also send this event and must be ignored.
+            if (pkg !in ignoredPkgs && pkg !in imePkgs && pkg != currentPkg && isActivity(pkg, e.className)) {
+                onForeground(pkg)
+            }
         }
         if (pkg == currentPkg && pkg in URL_BAR_IDS) {
             val now = System.currentTimeMillis()
@@ -222,6 +226,17 @@ class UnrotService : AccessibilityService() {
         val host = raw.substringAfter("://").substringBefore('/').substringBefore('?').substringBefore(':')
             .removePrefix("www.").removePrefix("m.").removePrefix("mobile.")
         return true to st.sites.firstOrNull { host == it || host.endsWith(".$it") }
+    }
+
+    private val activityCache = HashMap<String, Boolean>()
+
+    private fun isActivity(pkg: String, cls: CharSequence?): Boolean {
+        val c = cls?.toString() ?: return false
+        val key = "$pkg/$c"
+        return activityCache.getOrPut(key) {
+            runCatching { packageManager.getActivityInfo(android.content.ComponentName(pkg, c), 0); true }
+                .getOrDefault(false)
+        }
     }
 
     private fun isScreenUsable(): Boolean {
@@ -354,7 +369,7 @@ class UnrotService : AccessibilityService() {
         if (mode == BlockActivity.MODE_OUT || mode == BlockActivity.MODE_FOCUS) {
             performGlobalAction(GLOBAL_ACTION_HOME)
         }
-        hidePill()
+        hidePillNow()
         if (mode == BlockActivity.MODE_CHECKIN) {
             // Next check-in only after they answer or after another full interval.
             nextCheckInAt = Long.MAX_VALUE
@@ -380,12 +395,24 @@ class UnrotService : AccessibilityService() {
             bal <= 120 -> 0xEEFFB454.toInt() to 0xFF1F1405.toInt()
             else -> 0xE61A1E26.toInt() to Col.ACCENT
         }
+        h.removeCallbacks(hideRunnable)
         v.setTextColor(fg)
         (v.background as? GradientDrawable)?.setColor(bg)
         v.visibility = View.VISIBLE
     }
 
+    private val hideRunnable = Runnable { pill?.visibility = View.GONE }
+
+    /** Hides the pill unless you're back within a moment, so brief blips don't make it flicker. */
     private fun hidePill() {
+        if (pill?.visibility == View.VISIBLE) {
+            h.removeCallbacks(hideRunnable)
+            h.postDelayed(hideRunnable, 1500)
+        }
+    }
+
+    private fun hidePillNow() {
+        h.removeCallbacks(hideRunnable)
         pill?.visibility = View.GONE
     }
 
