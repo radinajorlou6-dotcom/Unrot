@@ -104,7 +104,10 @@ class Ui(val ctx: Context) {
 
 /** Adds a view with full width and a bottom gap. */
 fun LinearLayout.add(v: View, gapDp: Int = 10): View {
-    val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+    // Keep a fixed height if the view has one (spacers). A plain View set to WRAP_CONTENT
+    // stretches to fill all remaining space on short screens and pushes everything off-screen.
+    val fixed = v.layoutParams?.height?.takeIf { it > 0 }
+    val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, fixed ?: ViewGroup.LayoutParams.WRAP_CONTENT)
     lp.bottomMargin = context.dp(gapDp)
     addView(v, lp)
     return v
