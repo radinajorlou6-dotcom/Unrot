@@ -24,6 +24,7 @@ class BlockActivity : Activity() {
         const val MODE_FOCUS = "focus"
         const val MODE_NIGHT = "night"
         const val MODE_CHECKIN = "checkin"
+        const val MODE_INTRO = "intro"
     }
 
     private val h = Handler(Looper.getMainLooper())
@@ -106,6 +107,7 @@ class BlockActivity : Activity() {
                     root.add(button("Go to sleep", Ui.Style.PRIMARY) { goHome() })
                     val cont = button("", Ui.Style.GHOST) {
                         UnrotService.grantNightPass(pkg)
+                        UnrotService.introDone(pkg)
                         s.log("Kept scrolling $name past bedtime")
                         finish()
                     }
@@ -120,6 +122,39 @@ class BlockActivity : Activity() {
                         } else {
                             cont.isEnabled = true
                             cont.text = "Continue to $name for ${UnrotService.NIGHT_PASS_MIN} min"
+                            false
+                        }
+                    }
+                }
+                MODE_INTRO -> {
+                    root.add(text(name, 18f, Col.MUTED, bold = true), 0)
+                    root.add(text("You have", 22f), 0)
+                    val bigBal = text(Ledger.fmt(maxOf(0L, Ledger.balanceSec(s))), 60f, Col.ACCENT, bold = true)
+                    root.add(bigBal, 0)
+                    root.add(text("of scroll time. It counts down while you're in.", 15f, Col.MUTED), 22)
+                    if (night) nightOptions(root) else dayOptions(root)
+                    root.add(space(6))
+                    root.add(button("🔒 Lock in instead", Ui.Style.SECONDARY) {
+                        startActivity(Intent(this@BlockActivity, FocusActivity::class.java)); finish()
+                    })
+                    root.add(button("Leave", Ui.Style.GHOST) { goHome() })
+                    val cont = button("", Ui.Style.PRIMARY) {
+                        UnrotService.introDone(pkg)
+                        finish()
+                    }
+                    cont.isEnabled = false
+                    cont.alpha = 0.5f
+                    root.add(cont)
+                    var wait = st.n("introWaitSec")
+                    tick(1000) {
+                        if (wait > 0) {
+                            cont.text = "Continue to $name in ${wait}s"
+                            wait--
+                            true
+                        } else {
+                            cont.isEnabled = true
+                            cont.alpha = 1f
+                            cont.text = "Continue to $name"
                             false
                         }
                     }
@@ -150,9 +185,11 @@ class BlockActivity : Activity() {
                     }
                 }
             }
-            root.add(space(12))
-            val bal = Ledger.balanceSec(s)
-            root.add(text("Balance: ${if (bal > 0) Ledger.fmt(bal) else "0:00"}", 14f, Col.MUTED))
+            if (mode != MODE_INTRO) {
+                root.add(space(12))
+                val bal = Ledger.balanceSec(s)
+                root.add(text("Balance: ${if (bal > 0) Ledger.fmt(bal) else "0:00"}", 14f, Col.MUTED))
+            }
         }
     }
 
@@ -181,7 +218,8 @@ class BlockActivity : Activity() {
             card.add(r, 0)
             root.add(card)
         }
-        root.add(text("Calls with family earn 1 min per ${Rules.fmtRatio(Rules.current(s).callRatio)} min.", 13f, Col.MUTED))
+        val st = Rules.current(s)
+        root.add(text("A ${st.n("callMinMin")}+ min call with family earns ${st.n("callRewardMin")} min.", 13f, Col.MUTED))
     }
 
     /** Night fork: async kindness and getting thoughts out of your head. */

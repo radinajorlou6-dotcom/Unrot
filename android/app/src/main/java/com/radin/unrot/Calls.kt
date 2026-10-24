@@ -14,12 +14,20 @@ object Calls {
     fun canRead(ctx: Context) =
         ctx.checkSelfPermission(Manifest.permission.READ_CALL_LOG) == PackageManager.PERMISSION_GRANTED
 
-    /** Credits calls of 1+ minute with anyone on your family list. Returns seconds credited. */
+    /**
+     * A flat reward per real call with family. Android's call log (which apps can't edit)
+     * proves the call happened and how long it lasted. Each person pays out at most once per cooldown.
+     * Returns seconds credited.
+     */
     fun sync(ctx: Context): Long {
         if (!canRead(ctx)) return 0
         val s = Store.get(ctx)
         val fam = s.family.associateBy { norm(it.phone) }.filterKeys { it.length >= 7 }
         val st = Rules.current(s)
+        val minSec = st.n("callMinMin") * 60L
+        val cooldownMs = st.n("callCooldownH") * 3_600_000L
+        val reward = st.n("callRewardMin") * 60L
+        val paid = s.obj("callPaid")
         var last = s.lastCallTs
         var total = 0L
         runCatching {
@@ -37,12 +45,23 @@ object Calls {
                     val date = c.getLong(3)
                     if (date > last) last = date
                     if (type != CallLog.Calls.OUTGOING_TYPE && type != CallLog.Calls.INCOMING_TYPE) continue
-                    if (dur < 60) continue
-                    val who = fam[norm(number)] ?: continue
-                    total += Ledger.credit(s, st, (dur / st.callRatio).toLong(), "call with ${who.name}, ${dur / 60} min")
+                    val key = norm(number)
+                    val who = fam[key] ?: continue
+                    if (dur < minSec) {
+                        s.log("Call with ${who.name} was ${dur / 60} min. Needs ${minSec / 60}+ to earn time")
+                        continue
+                    }
+                    val lastPaid = paid.optLong(key, 0L)
+                    if (date - lastPaid < cooldownMs) {
+                        s.log("Call with ${who.name}: already paid in the last ${cooldownMs / 3_600_000}h")
+                        continue
+                    }
+                    paid.put(key, date)
+                    total += Ledger.credit(s, st, reward, "call with ${who.name} (${dur / 60} min)")
                 }
             }
         }
+        s.putObj("callPaid", paid)
         s.lastCallTs = last
         return total
     }

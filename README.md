@@ -2,7 +2,23 @@
 
 Scroll time you have to earn. Lock in, work out, or call family to earn minutes; TikTok, Instagram and co. (and games on your laptop) spend them. When you run out, Unrot doesn't just put up a wall. It puts something better in front of you: a one-tap call to family during the day, a voice note or brain dump at night.
 
-**Default:** every 3 minutes locked in (or working out, or on the phone with family) earns 1 minute. Every ratio is adjustable.
+## Ways to earn (all verified, nothing on your word)
+
+| What | Default | Checked by |
+|---|---|---|
+| Lock in (study/work timer) | 3 min → 1 min | Unrot's own timer |
+| Watch workouts (gym, soccer…) | 3 min → 1 min | Galaxy Watch → Health Connect |
+| Family call, 5+ min | +10 min, once per person every 3h | Android call log |
+| Steps | +2 min per 1,000 (max 30/day) | Galaxy Watch |
+| Asleep by bedtime (6h+) | +15 min next morning | Galaxy Watch sleep tracking |
+| New best run pace (2+ km) | +15 min | Watch GPS distance |
+| Gym PR in FitNotes | +15 min each (max 45/day) | FitNotes export **plus** a watch workout that same day |
+
+Every number is adjustable in Unrot → Rules (loosening waits 24h).
+
+**FitNotes PRs:** after your workout, export from FitNotes as a CSV (spreadsheet) and share it to **"Unrot: check for PRs"**, or use **Check FitNotes for PRs** in Unrot and pick the file.
+
+**When you open a blocked app** you get a card with your balance and a family-call suggestion. "Continue" unlocks after 15 seconds (adjustable), and the card is skipped if you were in that app in the last 2 minutes. While you're in, a countdown pill stays on screen (drag it anywhere).
 
 ---
 

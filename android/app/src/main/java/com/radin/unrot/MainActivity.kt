@@ -28,6 +28,7 @@ class MainActivity : Activity() {
 
     private val REQ_PERMS = 10
     private val REQ_HC = 11
+    private val REQ_FITNOTES = 12
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -67,8 +68,8 @@ class MainActivity : Activity() {
             var earned = 0L
             try {
                 hcAvailable = HealthSync.available(this)
-                hcGranted = hcAvailable && HealthSync.hasRead(this)
-                if (hcGranted) earned += maxOf(0L, HealthSync.sync(this))
+                hcGranted = hcAvailable && HealthSync.hasAll(this)
+                if (hcAvailable) earned += maxOf(0L, HealthSync.sync(this))
                 earned += Calls.sync(this)
                 if (Sync.configured(s)) Sync.run(s)
             } catch (_: Throwable) {
@@ -94,6 +95,7 @@ class MainActivity : Activity() {
         Ledger.ensureDailyBase(s, st)
         setScreen { root ->
             header(root)
+            crashCard(root)
             setupCard(root)
             tomorrowCard(root)
             earnCard(root, st)
@@ -166,8 +168,8 @@ class MainActivity : Activity() {
         )
         if (hcAvailable) {
             steps += Step(
-                hcGranted, "6. Workouts from your watch",
-                "Allow \"Exercise\" (and background access if asked). Then in Samsung Health: ⋮ → Settings → Health Connect, and turn syncing on.",
+                hcGranted, "6. Workouts, steps & sleep from your watch",
+                "Allow Exercise, Steps, Sleep and Distance (and background access if asked). Then in Samsung Health: ⋮ → Settings → Health Connect, and turn syncing on.",
                 "Connect Health Connect",
             ) {
                 runCatching {
@@ -224,6 +226,10 @@ class MainActivity : Activity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         @Suppress("DEPRECATION")
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQ_FITNOTES && resultCode == RESULT_OK && data?.data != null) {
+            startActivity(Intent(this, ImportActivity::class.java).setData(data.data).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
+            return
+        }
         refreshInBackground()
     }
 
@@ -246,17 +252,54 @@ class MainActivity : Activity() {
 
     private fun Ui.earnCard(root: LinearLayout, st: Settings) {
         val c = section(root, "Earn time")
-        c.add(
-            text(
-                "Lock in, work out, or call family. Every ${Rules.fmtRatio(st.focusRatio)} min locked in, " +
-                    "${Rules.fmtRatio(st.workoutRatio)} min of workout, or ${Rules.fmtRatio(st.callRatio)} min on the phone with family earns 1 min.",
-                14f, Col.MUTED,
-            ), 12,
+        val ways = listOf(
+            "🔒 Lock in: ${Rules.fmtRatio(st.focusRatio)} min → 1 min",
+            "🏃 Watch workouts: ${Rules.fmtRatio(st.workoutRatio)} min → 1 min",
+            "📞 Family call (${st.n("callMinMin")}+ min): +${st.n("callRewardMin")} min, once per person every ${st.n("callCooldownH")}h",
+            "👟 Every ${"%,d".format(st.n("stepsUnit"))} steps: +${st.n("stepsRewardMin")} min (max ${st.n("stepsCapMin")}/day)",
+            "😴 Asleep by bedtime: +${st.n("sleepBonusMin")} min the next morning",
+            "⚡ Beat your best run pace (2+ km): +${st.n("runPrBonusMin")} min",
+            "🏆 Gym PR in FitNotes, on a day your watch logged a workout: +${st.n("liftPrBonusMin")} min each (max ${st.n("liftPrCapMin")}/day)",
         )
+        ways.forEach { c.add(text(it, 14f, Col.MUTED), 4) }
+        if (s.bestPace > 0) c.add(text("Best run pace: ${HealthSync.fmtPace(s.bestPace)}/km", 13f, Col.MUTED), 4)
+        c.add(space(6))
         c.add(button(if (Ledger.focusActive(s)) "🔒 See lock-in" else "🔒 Lock in", Ui.Style.PRIMARY) {
             startActivity(Intent(this@MainActivity, FocusActivity::class.java))
         })
-        c.add(button("Check for new workouts & calls", Ui.Style.SECONDARY) { refreshInBackground(toast = true) }, 0)
+        c.add(button("Check watch & calls now", Ui.Style.SECONDARY) { refreshInBackground(toast = true) })
+        c.add(button("🏆 Check FitNotes for PRs", Ui.Style.SECONDARY) {
+            dialog().setTitle("Check FitNotes for PRs")
+                .setMessage(
+                    "In FitNotes, export your workouts as a CSV (spreadsheet) file. If FitNotes lets you share it, pick " +
+                        "\"Unrot: check for PRs\". Otherwise tap \"Pick file\" here and choose the export.",
+                )
+                .setPositiveButton("Pick file") { _, _ ->
+                    runCatching {
+                        startActivityForResult(
+                            Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"),
+                            REQ_FITNOTES,
+                        )
+                    }
+                }
+                .setNegativeButton("Cancel", null).show()
+        }, 0)
+    }
+
+    private fun Ui.crashCard(root: LinearLayout) {
+        val crash = s.lastCrash
+        if (crash.isEmpty()) return
+        val c = section(root, "⚠️ Something crashed")
+        c.add(text("Copy this and send it to Claude so it can be fixed.", 14f, Col.MUTED), 6)
+        c.add(text(crash.take(400), 12f, Col.WARN), 8)
+        val r = row()
+        r.addWeighted(button("Copy", Ui.Style.SECONDARY) {
+            val cm = getSystemService(android.content.ClipboardManager::class.java)
+            cm.setPrimaryClip(android.content.ClipData.newPlainText("Unrot crash", crash))
+            Toast.makeText(this@MainActivity, "Copied", Toast.LENGTH_SHORT).show()
+        })
+        r.addWeighted(button("Dismiss", Ui.Style.GHOST) { s.lastCrash = ""; render() }, 0)
+        c.add(r, 0)
     }
 
     private fun Ui.activityCard(root: LinearLayout) {
@@ -354,11 +397,6 @@ class MainActivity : Activity() {
                 propose(st.copy(workoutRatio = v.coerceIn(0.1, 100.0)))
             }
         }
-        rule("Family call ratio", "${Rules.fmtRatio(st.callRatio)} min → 1 min") {
-            numberDialog("Call minutes per 1 min earned", st.callRatio.toString(), decimal = true) { v ->
-                propose(st.copy(callRatio = v.coerceIn(0.1, 100.0)))
-            }
-        }
         rule("Free minutes every day", "${st.dailyBaseMin} min") {
             numberDialog("Free minutes per day", st.dailyBaseMin.toString()) { v ->
                 propose(st.copy(dailyBaseMin = v.toInt().coerceIn(0, 600)))
@@ -387,6 +425,13 @@ class MainActivity : Activity() {
         }
         rule("Protect Unrot's settings", if (st.protection) "On" else "Off") {
             propose(st.copy(protection = !st.protection))
+        }
+        for (nr in NumRules.all) {
+            rule(nr.label, nr.fmt(st.n(nr.key))) {
+                numberDialog(nr.label, st.n(nr.key).toString()) { v ->
+                    propose(st.withNum(nr.key, v.toInt().coerceIn(nr.min, nr.max)))
+                }
+            }
         }
 
         val pend = Rules.pending(s)

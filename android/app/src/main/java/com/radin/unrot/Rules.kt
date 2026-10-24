@@ -20,8 +20,14 @@ data class Settings(
     val countWalks: Boolean = false,
     val protection: Boolean = true,
     val flagged: Set<String> = DEFAULT_FLAGGED,
+    /** All the simple whole-number rules (see [NumRules]); missing keys use their defaults. */
+    val nums: Map<String, Int> = emptyMap(),
 ) {
     val bedtimeOn: Boolean get() = bedStart != bedEnd
+
+    fun n(key: String): Int = nums[key] ?: NumRules.byKey(key).def
+
+    fun withNum(key: String, v: Int): Settings = copy(nums = nums + (key to v))
 
     fun inBedtime(minuteOfDay: Int): Boolean = when {
         !bedtimeOn -> false
@@ -42,6 +48,7 @@ data class Settings(
         .put("countWalks", countWalks)
         .put("protection", protection)
         .put("flagged", JSONArray().also { a -> flagged.forEach { a.put(it) } })
+        .put("nums", JSONObject().also { o -> nums.forEach { (k, v) -> o.put(k, v) } })
 
     companion object {
         val DEFAULT_FLAGGED = setOf(
@@ -72,6 +79,7 @@ data class Settings(
                 countWalks = o.optBoolean("countWalks", d.countWalks),
                 protection = o.optBoolean("protection", d.protection),
                 flagged = if (fl == null) d.flagged else (0 until fl.length()).map { fl.getString(it) }.toSet(),
+                nums = o.optJSONObject("nums")?.let { n -> n.keys().asSequence().associateWith { n.optInt(it) } } ?: emptyMap(),
             )
         }
     }
@@ -136,6 +144,7 @@ object Rules {
         key == "countWalks" -> st.copy(countWalks = v.toBoolean())
         key == "protection" -> st.copy(protection = v.toBoolean())
         key.startsWith("unflag:") -> st.copy(flagged = st.flagged - key.removePrefix("unflag:"))
+        key.startsWith("num:") -> st.withNum(key.removePrefix("num:"), v.toInt())
         else -> st
     }
 
@@ -172,8 +181,11 @@ object Rules {
             new.workoutRatio < old.workoutRatio, "Workout ratio → ${fmtRatio(new.workoutRatio)}:1")
         handle("focusRatio", old.focusRatio.toString(), new.focusRatio.toString(),
             new.focusRatio < old.focusRatio, "Lock-in ratio → ${fmtRatio(new.focusRatio)}:1")
-        handle("callRatio", old.callRatio.toString(), new.callRatio.toString(),
-            new.callRatio < old.callRatio, "Call ratio → ${fmtRatio(new.callRatio)}:1")
+        for (r in NumRules.all) {
+            val o = old.n(r.key)
+            val v = new.n(r.key)
+            handle("num:${r.key}", o.toString(), v.toString(), if (r.looserIfHigher) v > o else v < o, "${r.label} → ${r.fmt(v)}")
+        }
         handle("dailyBaseMin", old.dailyBaseMin.toString(), new.dailyBaseMin.toString(),
             new.dailyBaseMin > old.dailyBaseMin, "Free daily minutes → ${new.dailyBaseMin}")
         handle("maxBankMin", old.maxBankMin.toString(), new.maxBankMin.toString(),
@@ -218,4 +230,34 @@ object Rules {
         val h12 = if (h % 12 == 0) 12 else h % 12
         return if (mm == 0) "$h12$ampm" else "$h12:${"%02d".format(mm)}$ampm"
     }
+}
+
+/** A whole-number rule. [looserIfHigher] decides which direction has to wait 24 hours. */
+data class NumRule(
+    val key: String, val label: String, val def: Int, val min: Int, val max: Int,
+    val looserIfHigher: Boolean, val unit: String,
+) {
+    fun fmt(v: Int) = when {
+        unit == "steps" -> "%,d steps".format(v)
+        unit.isEmpty() -> v.toString()
+        else -> "$v $unit"
+    }
+}
+
+object NumRules {
+    val all = listOf(
+        NumRule("introWaitSec", "Wait before \"Continue\" on the opening card", 15, 0, 300, false, "s"),
+        NumRule("callRewardMin", "Minutes earned per family call", 10, 1, 60, true, "min"),
+        NumRule("callMinMin", "Shortest call that counts", 5, 1, 60, false, "min"),
+        NumRule("callCooldownH", "Hours before the same person pays again", 3, 0, 48, false, "h"),
+        NumRule("stepsUnit", "Steps per step reward", 1000, 100, 20000, false, "steps"),
+        NumRule("stepsRewardMin", "Minutes per step reward", 2, 1, 60, true, "min"),
+        NumRule("stepsCapMin", "Most minutes from steps per day", 30, 0, 600, true, "min"),
+        NumRule("sleepBonusMin", "Bonus for being asleep by bedtime", 15, 0, 120, true, "min"),
+        NumRule("runPrBonusMin", "Bonus for beating your best run pace", 15, 0, 120, true, "min"),
+        NumRule("liftPrBonusMin", "Bonus per gym PR (FitNotes)", 15, 0, 120, true, "min"),
+        NumRule("liftPrCapMin", "Most gym-PR minutes per day", 45, 0, 600, true, "min"),
+    )
+    private val map = all.associateBy { it.key }
+    fun byKey(k: String): NumRule = map.getValue(k)
 }

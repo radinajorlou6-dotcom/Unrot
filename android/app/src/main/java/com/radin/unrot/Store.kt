@@ -88,6 +88,33 @@ class Store private constructor(ctx: Context) {
         get() = str("pending")
         set(v) = putStr("pending", v)
 
+    // ---- Small JSON maps (call cooldowns, PR minutes per day, …) ----
+    fun obj(k: String): JSONObject = runCatching { JSONObject(str(k)) }.getOrNull() ?: JSONObject()
+    fun putObj(k: String, o: JSONObject) = putStr(k, o.toString())
+
+    var stepsDay: String
+        get() = str("stepsDay")
+        set(v) = putStr("stepsDay", v)
+    var stepsPaidMin: Long
+        get() = long("stepsPaidMin")
+        set(v) = putLong("stepsPaidMin", v)
+    /** Best run pace in seconds per km (0 = no run yet). */
+    var bestPace: Long
+        get() = long("bestPace")
+        set(v) = putLong("bestPace", v)
+
+    var pillX: Int
+        get() = p.getInt("pillX", -1)
+        set(v) = p.edit().putInt("pillX", v).apply()
+    var pillY: Int
+        get() = p.getInt("pillY", -1)
+        set(v) = p.edit().putInt("pillY", v).apply()
+
+    /** The last crash, shown on the main screen so bugs can be reported exactly. */
+    var lastCrash: String
+        get() = str("lastCrash")
+        set(v) = p.edit().putString("lastCrash", v).commit().let { }
+
     var onboarded: Boolean
         get() = p.getBoolean("onboarded", false)
         set(v) = p.edit().putBoolean("onboarded", v).apply()

@@ -122,7 +122,17 @@ fun LinearLayout.addWeighted(v: View, gapDp: Int = 8): View {
 fun Activity.setScreen(build: Ui.(LinearLayout) -> Unit): LinearLayout {
     val ui = Ui(this)
     val content = ui.col(20)
-    ui.build(content)
+    try {
+        ui.build(content)
+    } catch (e: Throwable) {
+        // Never show a blank screen: show what went wrong so it can be reported and fixed.
+        Store.get(this).lastCrash = "${javaClass.simpleName}: ${e.stackTraceToString().take(1500)}"
+        content.removeAllViews()
+        content.add(ui.text("Something broke on this screen 😬", 22f, bold = true))
+        content.add(ui.text("Send this to Claude so it can be fixed:", 15f, Col.MUTED))
+        content.add(ui.text(e.toString(), 13f, Col.WARN))
+        content.add(ui.button("Close", Ui.Style.SECONDARY) { finish() })
+    }
     val scroll = ScrollView(this).apply {
         setBackgroundColor(Col.BG)
         isFillViewport = true

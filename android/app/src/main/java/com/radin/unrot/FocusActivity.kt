@@ -16,6 +16,7 @@ class FocusActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         s = Store.get(this)
+        render()
     }
 
     override fun onResume() {

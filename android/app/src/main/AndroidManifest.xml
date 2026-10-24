@@ -11,6 +11,9 @@
     <uses-permission android:name="android.permission.READ_CALL_LOG" />
     <uses-permission android:name="android.permission.CALL_PHONE" />
     <uses-permission android:name="android.permission.health.READ_EXERCISE" />
+    <uses-permission android:name="android.permission.health.READ_STEPS" />
+    <uses-permission android:name="android.permission.health.READ_SLEEP" />
+    <uses-permission android:name="android.permission.health.READ_DISTANCE" />
     <uses-permission android:name="android.permission.health.READ_HEALTH_DATA_IN_BACKGROUND" />
     <uses-permission
         android:name="android.permission.QUERY_ALL_PACKAGES"
@@ -26,6 +29,7 @@
     </queries>
 
     <application
+        android:name=".UnrotApp"
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:label="Unrot"
@@ -62,6 +66,28 @@
         <activity
             android:name=".AppPickerActivity"
             android:exported="false" />
+
+        <!-- Share a FitNotes export to Unrot to get paid for new PRs -->
+        <activity
+            android:name=".ImportActivity"
+            android:exported="true"
+            android:label="Unrot: check for PRs">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/*" />
+                <data android:mimeType="application/csv" />
+                <data android:mimeType="application/vnd.ms-excel" />
+                <data android:mimeType="application/octet-stream" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" />
+                <data android:mimeType="text/csv" />
+                <data android:mimeType="text/comma-separated-values" />
+            </intent-filter>
+        </activity>
 
         <!-- Health Connect needs a privacy/rationale screen or it won't show its permission dialog -->
         <activity
