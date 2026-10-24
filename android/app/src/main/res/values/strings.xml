@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="accessibility_desc">Unrot watches which app is open so it can count your scroll time and step in when you run out. It doesn\'t read or send anything you type.</string>
+</resources>
