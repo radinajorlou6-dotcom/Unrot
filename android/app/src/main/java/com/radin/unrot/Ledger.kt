@@ -81,11 +81,23 @@ object Ledger {
         s.log("Locked in for $minutes min")
     }
 
-    fun cancelFocus(s: Store) {
-        if (s.focusUntil == 0L) return
+    /** Seconds you'd get for ending right now: the time done, at the early-end rate. */
+    fun earlyEndPayout(s: Store, st: Settings): Long {
+        if (s.focusUntil == 0L) return 0
+        val done = max(0L, s.focusPlannedSec - max(0L, (s.focusUntil - System.currentTimeMillis()) / 1000))
+        return (done / st.focusRatio * st.n("earlyEndPct") / 100.0).toLong()
+    }
+
+    /** Ends a lock-in early: you're paid for the time you did, at a reduced rate. */
+    fun cancelFocus(s: Store, st: Settings): Long = synchronized(s.lock) {
+        if (s.focusUntil == 0L) return 0
+        val pay = earlyEndPayout(s, st)
+        val doneMin = max(0L, s.focusPlannedSec - max(0L, (s.focusUntil - System.currentTimeMillis()) / 1000)) / 60
         s.focusUntil = 0
         s.focusPlannedSec = 0
-        s.log("Ended a lock-in early (no time earned)")
+        if (pay > 0) credit(s, st, pay, "ended a lock-in early after $doneMin min (${st.n("earlyEndPct")}% rate)")
+        else s.log("Ended a lock-in early")
+        pay
     }
 
     /** Pays out a finished lock-in. Returns seconds earned, or -1 if nothing finished. */

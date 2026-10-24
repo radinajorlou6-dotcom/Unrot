@@ -200,11 +200,15 @@ class MainActivity : Activity() {
                         14f, Col.MUTED,
                     ), 10,
                 )
-                c.add(button("End early (earn nothing)", Ui.Style.DANGER) {
+                c.add(button("End early (${st.n("earlyEndPct")}% pay)", Ui.Style.DANGER) {
+                    val st2 = Rules.current(s)
                     dialog().setTitle("End early?")
-                        .setMessage("You'll lose the time you would have earned from this lock-in.")
+                        .setMessage(
+                            "You'll get ${Ledger.fmtShort(Ledger.earlyEndPayout(s, st2))} for the time you've done " +
+                                "(${st2.n("earlyEndPct")}% rate) instead of ${Ledger.fmtShort((s.focusPlannedSec / st2.focusRatio).toLong())} for finishing.",
+                        )
                         .setPositiveButton("End it") { _, _ ->
-                            Ledger.cancelFocus(s)
+                            Ledger.cancelFocus(s, Rules.current(s))
                             syncNow()
                             render()
                         }
@@ -217,8 +221,8 @@ class MainActivity : Activity() {
         }
         c.add(
             text(
-                "Study, work, anything real. Every ${Rules.fmtRatio(st.focusRatio)} min earns 1 min, paid when the timer ends. " +
-                    "Blocked apps and sites are off until then.",
+                "Study, work, anything real. Every ${Rules.fmtRatio(st.focusRatio)} min earns 1 min, paid when the timer ends " +
+                    "(end early and you get ${st.n("earlyEndPct")}% for the time you did). Blocked apps and sites are off until then.",
                 14f, Col.MUTED,
             ), 10,
         )

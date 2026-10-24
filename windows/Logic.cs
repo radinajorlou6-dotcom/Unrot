@@ -69,11 +69,24 @@ public static class Ledger
         Store.AddLog($"Locked in for {minutes} min");
     }
 
-    public static void CancelFocus()
+    /// <summary>Seconds you'd get for ending now: the time done, at the early-end rate.</summary>
+    public static long EarlyEndPayout()
     {
+        if (Store.S.FocusUntil == 0) return 0;
+        var done = Math.Max(0, Store.S.FocusPlannedSec - Math.Max(0, (Store.S.FocusUntil - Store.Now) / 1000));
+        var st = Rules.Current();
+        return (long)(done / st.FocusRatio * st.EarlyEndPct / 100.0);
+    }
+
+    public static long CancelFocus()
+    {
+        var pay = EarlyEndPayout();
+        var doneMin = Math.Max(0, Store.S.FocusPlannedSec - Math.Max(0, (Store.S.FocusUntil - Store.Now) / 1000)) / 60;
         Store.S.FocusUntil = 0;
         Store.S.FocusPlannedSec = 0;
-        Store.AddLog("Ended a lock-in early (no time earned)");
+        if (pay > 0) Credit(pay, $"ended a lock-in early after {doneMin} min ({Rules.Current().EarlyEndPct}% rate)");
+        else Store.AddLog("Ended a lock-in early");
+        return pay;
     }
 
     /// <summary>Pays out a finished lock-in. Returns seconds earned or -1.</summary>
@@ -135,6 +148,7 @@ public static class Rules
             case "graceSec": s.GraceSec = int.Parse(v); break;
             case "protection": s.Protection = bool.Parse(v); break;
             case "engagingCostPct": s.EngagingCostPct = int.Parse(v); break;
+            case "earlyEndPct": s.EarlyEndPct = int.Parse(v); break;
             default:
                 if (key.StartsWith("ignore:")) Store.S.IgnoredGames.Add(key["ignore:".Length..]);
                 else if (key.StartsWith("unextra:")) Store.S.ExtraGames.RemoveAll(g => Same(g, key["unextra:".Length..]));
@@ -165,10 +179,12 @@ public static class Rules
         return true;
     }
 
-    public static int ProposeSettings(double focusRatio, int maxBankMin, int graceSec, bool protection, int engagingPct)
+    public static int ProposeSettings(double focusRatio, int maxBankMin, int graceSec, bool protection, int engagingPct, int earlyEndPct)
     {
         var old = Current();
         int delayed = 0;
+        if (earlyEndPct != old.EarlyEndPct && !Change("earlyEndPct", earlyEndPct.ToString(),
+                earlyEndPct > old.EarlyEndPct, $"Early-end pay → {earlyEndPct}%")) delayed++;
         if (engagingPct != old.EngagingCostPct && !Change("engagingCostPct", engagingPct.ToString(),
                 engagingPct < old.EngagingCostPct, $"Games & movies cost → {engagingPct}%")) delayed++;
         if (focusRatio != old.FocusRatio && !Change("focusRatio", focusRatio.ToString(CultureInfo.InvariantCulture),

@@ -97,9 +97,11 @@ public class MainForm : Form
             if (Ledger.LocalFocus)
             {
                 Add(L($"Finish to earn {Ledger.FmtShort((long)(Store.S.FocusPlannedSec / st.FocusRatio))}.", 10, Theme.Muted));
-                Row().Controls.Add(Theme.Button("End early (earn nothing)", () =>
+                Row().Controls.Add(Theme.Button($"End early ({st.EarlyEndPct}% pay)", () =>
                 {
-                    if (MessageBox.Show("You'll lose the time you'd have earned. End it?", "Unrot", MessageBoxButtons.YesNo) == DialogResult.Yes)
+                    var pay = Ledger.EarlyEndPayout();
+                    var full = (long)(Store.S.FocusPlannedSec / st.FocusRatio);
+                    if (MessageBox.Show($"You'll get {Ledger.FmtShort(pay)} for the time you've done ({st.EarlyEndPct}% rate) instead of {Ledger.FmtShort(full)} for finishing. End it?", "Unrot", MessageBoxButtons.YesNo) == DialogResult.Yes)
                     {
                         Ledger.CancelFocus();
                         Store.Save();
@@ -112,7 +114,7 @@ public class MainForm : Form
         }
         else
         {
-            Add(L($"Study or work. Every {Ledger.FmtRatio(st.FocusRatio)} min earns 1 min of game time, paid when the timer ends. Games (and your phone's blocked apps) are off until then.", 10, Theme.Muted));
+            Add(L($"Study or work. Every {Ledger.FmtRatio(st.FocusRatio)} min earns 1 min of game time, paid when the timer ends (end early and you get {st.EarlyEndPct}% for the time you did). Games (and your phone's blocked apps) are off until then.", 10, Theme.Muted));
             var r = Row();
             foreach (var m in new[] { 25, 45, 60, 90 })
                 r.Controls.Add(Theme.Button($"{m} min  (+{Ledger.FmtShort((long)(m * 60 / st.FocusRatio))})", () => { _app.StartFocus(m); Rebuild(); }, m == 25));
@@ -195,15 +197,17 @@ public class MainForm : Form
         var bank = Num(st.MaxBankMin, 5, 1440, 0);
         var grace = Num(st.GraceSec, 5, 600, 0);
         var engaging = Num(st.EngagingCostPct, 10, 100, 0);
+        var earlyEnd = Num(st.EarlyEndPct, 0, 100, 0);
         var prot = new CheckBox { Text = "Protection on", Checked = st.Protection, ForeColor = Theme.Text, AutoSize = true };
         Labeled("Games & movie sites cost (% of normal)", engaging);
+        Labeled("Pay for ending a lock-in early (% of normal)", earlyEnd);
         Labeled("Minutes locked in per 1 min of game time", ratio);
         Labeled("Most game time you can save up (min)", bank);
         Labeled("Seconds to save before a game closes", grace);
         Add(prot);
         Row().Controls.Add(Theme.Button("Save rules", () =>
         {
-            var delayed = Rules.ProposeSettings((double)ratio.Value, (int)bank.Value, (int)grace.Value, prot.Checked, (int)engaging.Value);
+            var delayed = Rules.ProposeSettings((double)ratio.Value, (int)bank.Value, (int)grace.Value, prot.Checked, (int)engaging.Value, (int)earlyEnd.Value);
             MessageBox.Show(delayed > 0 ? "Saved. Looser changes kick in 24 hours from now." : "Saved.", "Unrot");
             Rebuild();
         }, true));

@@ -14,6 +14,8 @@ public class Settings
     public bool Protection { get; set; } = true;
     /// <summary>Games and movie sites cost this % of normal (procrastinating, but engaging).</summary>
     public int EngagingCostPct { get; set; } = 50;
+    /// <summary>Ending a lock-in early pays this % of the normal rate for the time done.</summary>
+    public int EarlyEndPct { get; set; } = 50;
     public List<BlockedSite> Sites { get; set; } = BlockedSite.Defaults();
 }
 

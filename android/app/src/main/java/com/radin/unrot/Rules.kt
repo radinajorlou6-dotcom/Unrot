@@ -293,6 +293,7 @@ data class NumRule(
 object NumRules {
     val all = listOf(
         NumRule("engagingCostPct", "Games & movies cost (% of normal)", 50, 10, 100, false, "%"),
+        NumRule("earlyEndPct", "Pay for ending a lock-in early (% of normal)", 50, 0, 100, true, "%"),
         NumRule("introWaitSec", "Wait before \"Continue\" on the opening card", 15, 0, 300, false, "s"),
         NumRule("callRewardMin", "Minutes earned per family call", 10, 1, 60, true, "min"),
         NumRule("callMinMin", "Shortest call that counts", 5, 1, 60, false, "min"),
