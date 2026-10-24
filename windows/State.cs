@@ -1,0 +1,141 @@
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+
+namespace Unrot;
+
+public class Settings
+{
+    /// <summary>Minutes locked in per 1 minute of game time.</summary>
+    public double FocusRatio { get; set; } = 3;
+    public int MaxBankMin { get; set; } = 180;
+    /// <summary>Seconds you get to save before a game is closed.</summary>
+    public int GraceSec { get; set; } = 30;
+    public bool Protection { get; set; } = true;
+}
+
+public class PendingChange
+{
+    public string Key { get; set; }
+    public string Value { get; set; }
+    public long ApplyAt { get; set; }
+    public string Label { get; set; }
+}
+
+public class LogLine
+{
+    public string Text { get; set; }
+    public long Ts { get; set; }
+}
+
+public class AppState
+{
+    public string DeviceId { get; set; } = "laptop-" + Guid.NewGuid().ToString("N")[..8];
+    public long EarnedSec { get; set; }
+    public long SpentSec { get; set; }
+    public long FocusUntil { get; set; }
+    public long FocusPlannedSec { get; set; }
+    public Settings Settings { get; set; } = new();
+    public List<PendingChange> Pending { get; set; } = new();
+    public string PinHash { get; set; } = "";
+    public string PinSalt { get; set; } = "";
+    public long AdminUntil { get; set; }
+    public List<string> ExtraGames { get; set; } = new();
+    public List<string> IgnoredGames { get; set; } = new();
+    public string DbUrl { get; set; } = "";
+    public string SyncCode { get; set; } = "";
+    public string RemoteJson { get; set; } = "{}";
+    public long LastSyncTs { get; set; }
+    public string LastSyncError { get; set; } = "";
+    public bool Welcomed { get; set; }
+    public List<LogLine> Log { get; set; } = new();
+}
+
+public static class Store
+{
+    public static readonly string Dir = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Unrot");
+    static string FilePath => Path.Combine(Dir, "state.json");
+    static readonly JsonSerializerOptions Opts = new() { WriteIndented = true };
+
+    public static AppState S { get; private set; } = new();
+
+    public static long Now => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+    public static void Load()
+    {
+        try
+        {
+            if (File.Exists(FilePath))
+                S = JsonSerializer.Deserialize<AppState>(File.ReadAllText(FilePath), Opts) ?? new AppState();
+        }
+        catch
+        {
+            // A corrupted file shouldn't brick the app; start fresh but keep a copy.
+            try { File.Copy(FilePath, FilePath + ".broken", true); } catch { }
+            S = new AppState();
+        }
+        S.Settings ??= new Settings();
+        S.Pending ??= new();
+        S.ExtraGames ??= new();
+        S.IgnoredGames ??= new();
+        S.Log ??= new();
+        Save();
+    }
+
+    public static void Save()
+    {
+        try
+        {
+            Directory.CreateDirectory(Dir);
+            var tmp = FilePath + ".tmp";
+            File.WriteAllText(tmp, JsonSerializer.Serialize(S, Opts));
+            File.Move(tmp, FilePath, true);
+        }
+        catch { }
+    }
+
+    public static void AddLog(string text)
+    {
+        S.Log.Insert(0, new LogLine { Text = text, Ts = Now });
+        if (S.Log.Count > 40) S.Log.RemoveRange(40, S.Log.Count - 40);
+        Save();
+    }
+}
+
+public static class Pin
+{
+    public const long UnlockMs = 10 * 60 * 1000;
+
+    public static bool IsSet => Store.S.PinHash.Length > 0;
+    public static bool Unlocked => Store.S.AdminUntil > Store.Now;
+
+    public static void Set(string pin)
+    {
+        Store.S.PinSalt = Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
+        Store.S.PinHash = Hash(Store.S.PinSalt, pin);
+        Store.S.AdminUntil = 0;
+        Store.Save();
+    }
+
+    public static bool Check(string pin)
+    {
+        if (!IsSet) return false;
+        var ok = Hash(Store.S.PinSalt, pin) == Store.S.PinHash;
+        if (ok)
+        {
+            Store.S.AdminUntil = Store.Now + UnlockMs;
+            Store.Save();
+        }
+        return ok;
+    }
+
+    public static void Lock()
+    {
+        Store.S.AdminUntil = 0;
+        Store.Save();
+    }
+
+    static string Hash(string salt, string pin) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(salt + pin))).ToLowerInvariant();
+}

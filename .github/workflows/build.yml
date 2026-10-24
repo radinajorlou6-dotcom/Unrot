@@ -35,8 +35,25 @@ jobs:
           name: android
           path: Unrot.apk
 
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Build Unrot.exe
+        run: dotnet publish windows/Unrot.Desktop.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: out/Unrot.exe
+
   release:
-    needs: [android]
+    needs: [android, windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -52,5 +69,6 @@ jobs:
           make_latest: true
           body: |
             **Phone:** download `Unrot.apk` on your OnePlus and install it.
+            **Laptop:** download `Unrot.exe` and run it once. It installs itself and starts with Windows.
             Full setup steps are in the README.
           files: dist/*
