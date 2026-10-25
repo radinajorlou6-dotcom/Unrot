@@ -46,6 +46,16 @@ class MainActivity : Activity() {
         s = Store.get(this)
         Notif.ensureChannels(this)
         addEngagingAppsOnce()
+        addMovieSitesOnce()
+    }
+
+    /** Movie sites (Cinejoy, Netflix…) are blocked at the cheaper rate. Runs once. */
+    private fun addMovieSitesOnce() {
+        if (s.p.getBoolean("movieSitesAdded", false)) return
+        val st = Rules.current(s)
+        val add = Settings.MOVIE_SITES - st.sites
+        Rules.propose(s, st.copy(sites = st.sites + add, halfRate = st.halfRate + add.map { "site:$it" }))
+        s.p.edit().putBoolean("movieSitesAdded", true).apply()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -451,22 +461,37 @@ class MainActivity : Activity() {
                 14f, Col.MUTED,
             ), 10,
         )
-        for (d in st.sites.sorted()) {
+        val pct = st.n("engagingCostPct")
+        for (d in st.sites.sortedWith(compareBy({ "site:$it" !in st.halfRate }, { it }))) {
+            val half = "site:$d" in st.halfRate
             val r = row()
-            r.addView(text(d, 16f), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            r.addView(text(if (half) "🎬 $d" else d, 16f), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            r.addView(button(if (half) "$pct%" else "Full", Ui.Style.GHOST) {
+                propose(if (half) st.copy(halfRate = st.halfRate - "site:$d") else st.copy(halfRate = st.halfRate + "site:$d"))
+            })
             r.addView(button("Remove", Ui.Style.GHOST) { propose(st.copy(sites = st.sites - d)) })
             c.add(r, 4)
         }
+        c.add(text("🎬 = movie site at $pct%. Tap the price to switch. Sites also match other endings (cinejoy.pk also catches cinejoy.to).", 13f, Col.MUTED), 8)
         c.add(button("+ Block a site", Ui.Style.SECONDARY) {
             val ui2 = Ui(this@MainActivity)
             val box = ui2.col(16)
             val f = ui2.input("e.g. twitch.tv")
             box.add(f)
+            val movie = android.widget.CheckBox(this@MainActivity).apply {
+                text = "Movie / streaming site (costs ${Rules.current(s).n("engagingCostPct")}%)"
+                setTextColor(Col.TEXT)
+                textSize = 15f
+            }
+            box.add(movie, 0)
             dialog().setTitle("Block a site").setView(box)
                 .setPositiveButton("Block") { _, _ ->
                     val d = f.text.toString().trim().lowercase()
                         .substringAfter("://").substringBefore('/').removePrefix("www.").removePrefix("m.")
-                    if (d.contains('.')) propose(Rules.current(s).copy(sites = Rules.current(s).sites + d))
+                    val cur = Rules.current(s)
+                    if (d.contains('.')) propose(
+                        cur.copy(sites = cur.sites + d, halfRate = if (movie.isChecked) cur.halfRate + "site:$d" else cur.halfRate),
+                    )
                     else Toast.makeText(this@MainActivity, "That doesn't look like a website.", Toast.LENGTH_LONG).show()
                 }.setNegativeButton("Cancel", null).show()
         }, 0)

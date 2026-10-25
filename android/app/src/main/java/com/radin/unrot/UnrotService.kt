@@ -225,7 +225,7 @@ class UnrotService : AccessibilityService() {
         val raw = node.text?.toString()?.trim()?.lowercase() ?: return true to null
         val host = raw.substringAfter("://").substringBefore('/').substringBefore('?').substringBefore(':')
             .removePrefix("www.").removePrefix("m.").removePrefix("mobile.")
-        return true to st.sites.firstOrNull { host == it || host.endsWith(".$it") }
+        return true to st.sites.firstOrNull { Settings.siteMatches(host, it) }
     }
 
     private val activityCache = HashMap<String, Boolean>()

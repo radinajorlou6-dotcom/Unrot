@@ -38,6 +38,7 @@ public class BlockedSite
         new() { Domain = "reddit.com", Keywords = "Reddit|: r/" },
         new() { Domain = "facebook.com", Keywords = "Facebook" },
         new() { Domain = "snapchat.com", Keywords = "Snapchat" },
+        new() { Domain = "cinejoy.pk", Keywords = "Cinejoy", Half = true },
         new() { Domain = "netflix.com", Keywords = "Netflix", Half = true },
         new() { Domain = "disneyplus.com", Keywords = "Disney+", Half = true },
         new() { Domain = "primevideo.com", Keywords = "Prime Video", Half = true },
@@ -80,6 +81,7 @@ public class AppState
     public long LastSyncTs { get; set; }
     public string LastSyncError { get; set; } = "";
     public bool Welcomed { get; set; }
+    public bool MovieSitesAdded { get; set; }
     public List<LogLine> Log { get; set; } = new();
 }
 
@@ -109,6 +111,14 @@ public static class Store
         }
         S.Settings ??= new Settings();
         S.Settings.Sites ??= BlockedSite.Defaults();
+        if (!S.MovieSitesAdded)
+        {
+            // One-time: add movie sites that came after the first version.
+            foreach (var d in BlockedSite.Defaults().Where(x => x.Half))
+                if (!S.Settings.Sites.Any(x => string.Equals(x.Domain, d.Domain, StringComparison.OrdinalIgnoreCase)))
+                    S.Settings.Sites.Add(d);
+            S.MovieSitesAdded = true;
+        }
         S.Pending ??= new();
         S.ExtraGames ??= new();
         S.IgnoredGames ??= new();

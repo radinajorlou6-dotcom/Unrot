@@ -185,7 +185,9 @@ public class MainForm : Form
             guess = guess.Length > 0 ? char.ToUpper(guess[0]) + guess[1..] : d;
             var k = Prompt.Ask("Block a site", "A word that appears in that site's tab title:", initial: guess);
             if (string.IsNullOrWhiteSpace(k)) return;
-            Rules.AddSite(d, k.Trim(), false);
+            var movie = MessageBox.Show($"Is {d} a movie / streaming site?\n\nYes = costs {st.EngagingCostPct}%, No = full price.",
+                "Block a site", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes;
+            Rules.AddSite(d, k.Trim(), movie);
             Rebuild();
         }));
 

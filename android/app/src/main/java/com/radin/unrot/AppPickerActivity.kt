@@ -44,7 +44,7 @@ class AppPickerActivity : Activity() {
                 ), 16,
             )
             root.add(button("Save", Ui.Style.PRIMARY) {
-                val r = Rules.propose(s, Rules.current(s).copy(flagged = chosen.toSet(), halfRate = half.intersect(chosen))) { p ->
+                val r = Rules.propose(s, Rules.current(s).copy(flagged = chosen.toSet(), halfRate = half.filter { it.startsWith("site:") || it in chosen }.toSet())) { p ->
                     apps.firstOrNull { it.pkg == p }?.label ?: p
                 }
                 val msg = if (r.delayed > 0) "Saved. ${r.delayed} loosening change(s) will apply in 24h." else "Saved."

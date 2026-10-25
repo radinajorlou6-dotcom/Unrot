@@ -68,6 +68,19 @@ data class Settings(
             "com.facebook.katana",
         )
 
+        /** Movie sites, blocked at the cheaper "engaging" rate. */
+        val MOVIE_SITES = setOf("cinejoy.pk", "netflix.com", "disneyplus.com", "primevideo.com", "crunchyroll.com")
+
+        /**
+         * Does [host] belong to blocked site [site]? Also matches the same name on a different ending
+         * (cinejoy.pk → cinejoy.to), since movie sites hop domains. Short names like "x" must match exactly.
+         */
+        fun siteMatches(host: String, site: String): Boolean {
+            if (host == site || host.endsWith(".$site")) return true
+            val base = site.substringBefore('.')
+            return base.length >= 5 && host.split('.').dropLast(1).contains(base)
+        }
+
         val DEFAULT_SITES = setOf(
             "youtube.com", "instagram.com", "x.com", "twitter.com", "tiktok.com",
             "reddit.com", "facebook.com", "snapchat.com",
@@ -178,7 +191,7 @@ object Rules {
 
     data class Result(val applied: Int, val delayed: Int)
 
-    fun propose(s: Store, new: Settings, labelFor: (String) -> String = { it }): Result = synchronized(s.lock) {
+    fun propose(s: Store, new: Settings, labelFor: (String) -> String = { it.removePrefix("site:") }): Result = synchronized(s.lock) {
         val old = current(s)
         var st = old
         val pend = pending(s).toMutableList()
@@ -248,7 +261,8 @@ object Rules {
             applied += fullAgain.size
         }
         for (pkg in new.halfRate - old.halfRate) {
-            val wasFullPrice = pkg in old.flagged
+            val wasFullPrice = pkg in old.flagged ||
+                (pkg.startsWith("site:") && pkg.removePrefix("site:") in old.sites)
             handle("half:$pkg", "0", "1", wasFullPrice, "${labelFor(pkg)} costs ${new.n("engagingCostPct")}%")
         }
 
