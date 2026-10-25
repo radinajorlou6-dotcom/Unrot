@@ -16,7 +16,7 @@ public class TrayApp : ApplicationContext
     bool _warned2, _warned30, _syncing;
     double _spendAcc;
 
-    public TrayApp()
+    public TrayApp(bool showWindow = true)
     {
         Store.Load();
         try { File.Delete(Program.InstalledExe + ".old"); } catch { }
@@ -47,12 +47,9 @@ public class TrayApp : ApplicationContext
         {
             Store.S.Welcomed = true;
             Store.AddLog("Unrot installed on this laptop");
-            ShowMain();
+            showWindow = true;
         }
-        else
-        {
-            Balloon("Unrot is running", $"{Ledger.Fmt(Math.Max(0, Ledger.Balance()))} left.");
-        }
+        if (showWindow) ShowMain();
     }
 
     public void ShowMain()
@@ -60,7 +57,10 @@ public class TrayApp : ApplicationContext
         if (_main == null || _main.IsDisposed) _main = new MainForm(this);
         _main.Show();
         if (_main.WindowState == FormWindowState.Minimized) _main.WindowState = FormWindowState.Normal;
+        // Bring it in front of whatever's open (Windows otherwise may leave it behind other windows).
+        _main.TopMost = true;
         _main.Activate();
+        _main.TopMost = false;
     }
 
     public void StartFocus(int minutes)
