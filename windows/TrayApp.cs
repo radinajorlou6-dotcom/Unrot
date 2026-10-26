@@ -15,6 +15,8 @@ public class TrayApp : ApplicationContext
     long _lastClosedAt;
     bool _warned2, _warned30, _syncing;
     double _spendAcc;
+    string _lastGame;
+    int _lastGamePid;
 
     public TrayApp(bool showWindow = true)
     {
@@ -114,7 +116,14 @@ public class TrayApp : ApplicationContext
             _main?.Rebuild();
         }
 
+        Games.RefreshIndexIfStale();
         var fg = Games.ForegroundGame();
+        var fgName = fg == null ? null : Path.GetFileName(fg.Value.Path);
+        if (fgName != _lastGame)
+        {
+            if (fgName != null) Store.AddLog("Playing " + fgName);
+            _lastGame = fgName;
+        }
         var site = fg == null ? Games.ForegroundSite() : null;
         if ((fg != null || site != null) && (_block == null || _block.IsDisposed))
         {
@@ -129,6 +138,7 @@ public class TrayApp : ApplicationContext
             if (bal > 180) { _warned2 = false; _warned30 = false; }
         }
 
+        if (fg != null) _lastGamePid = fg.Value.Pid;
         Enforce(fg != null, site);
 
         if (_ticks % 5 == 0)
@@ -183,7 +193,7 @@ public class TrayApp : ApplicationContext
         _block = new BlockForm(title, body, grace,
             onExpire: () =>
             {
-                var n = Games.CloseAll();
+                var n = Games.CloseAll(_lastGamePid);
                 _lastClosedAt = Store.Now;
                 Store.AddLog(focus ? $"Closed {n} game(s) during a lock-in" : $"Closed {n} game(s), out of time");
             },

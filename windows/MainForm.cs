@@ -123,6 +123,9 @@ public class MainForm : Form
         // ---- Games
         Section("Games");
         Add(L($"Anything from Steam, Epic, Riot, Xbox, EA, Ubisoft, GOG, Rockstar or Roblox counts automatically, at {st.EngagingCostPct}% of the normal cost. Time only counts while the game window is in front.", 10, Theme.Muted));
+        var steamApp = Games.SteamRunningAppId();
+        Add(L(steamApp != 0 ? $"Steam says a game is running right now (app {steamApp}). Full-screen windows count as that game." :
+            $"Steam isn't running a game right now. {Games.IndexedCount} games found in your Steam/Epic libraries.", 9, Theme.Muted));
         var running = Games.Running();
         if (running.Count > 0)
         {
