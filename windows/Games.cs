@@ -214,40 +214,93 @@ public static class Games
     }
 
     /// <summary>The game whose window is in front right now, if any.</summary>
+    [DllImport("user32.dll")] static extern bool EnumWindows(EnumWindowsProc cb, IntPtr lParam);
+    delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hWnd);
+    [DllImport("user32.dll")] static extern bool IsIconic(IntPtr hWnd);
+    [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr hWnd, int index);
+    [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr hWnd, int attr, out int value, int size);
+
+    /// <summary>
+    /// What's actually showing: the window you're focused on, plus the main window on every monitor
+    /// (the top-most one covering at least half of that screen). Small windows on top, click-through
+    /// overlays and minimized windows don't count. So a game on your second screen still counts while you
+    /// click around on the first.
+    /// </summary>
+    public static List<IntPtr> ShownWindows()
+    {
+        var screens = Screen.AllScreens;
+        var found = new Dictionary<string, IntPtr>();
+        EnumWindows((h, _) =>
+        {
+            try
+            {
+                if (!IsWindowVisible(h) || IsIconic(h)) return true;
+                if (DwmGetWindowAttribute(h, 14 /* DWMWA_CLOAKED */, out var cloaked, 4) == 0 && cloaked != 0) return true;
+                var ex = GetWindowLong(h, -20 /* GWL_EXSTYLE */);
+                if ((ex & 0x80 /* TOOLWINDOW */) != 0 || (ex & 0x20 /* TRANSPARENT */) != 0) return true;
+                if (!GetWindowRect(h, out var r)) return true;
+                foreach (var sc in screens)
+                {
+                    if (found.ContainsKey(sc.DeviceName)) continue;
+                    var b = sc.Bounds;
+                    long w = Math.Min(r.Right, b.Right) - Math.Max(r.Left, b.Left);
+                    long hh = Math.Min(r.Bottom, b.Bottom) - Math.Max(r.Top, b.Top);
+                    if (w > 0 && hh > 0 && w * hh * 2 >= (long)b.Width * b.Height) found[sc.DeviceName] = h;
+                }
+                return found.Count < screens.Length;
+            }
+            catch { return true; }
+        }, IntPtr.Zero);
+        var list = found.Values.Distinct().ToList();
+        var fg = GetForegroundWindow();
+        if (fg != IntPtr.Zero && !list.Contains(fg)) list.Insert(0, fg);
+        return list;
+    }
+
+    /// <summary>A game that's showing on any screen (or focused), if any.</summary>
     public static (int Pid, string Path)? ForegroundGame()
     {
-        var hwnd = GetForegroundWindow();
-        if (hwnd == IntPtr.Zero) return null;
-        GetWindowThreadProcessId(hwnd, out var pid);
-        if (pid == 0 || pid == (uint)Environment.ProcessId) return null;
-        var game = GameOf((int)pid);
-        if (game != null) return ((int)pid, game);
-        // Backup: Steam says a game is running and something full-screen (that isn't a browser etc.) is in front.
-        var name = ProcName((int)pid)?.ToLowerInvariant();
-        if (name != null && SteamRunningAppId() != 0 && IsFullScreen(hwnd) &&
-            !NeverGame.Contains(name) && !Browsers.Contains(name) &&
-            !Store.S.IgnoredGames.Any(g => Rules.Same(Path.GetFileName(g), name)))
-            return ((int)pid, name);
+        var shown = ShownWindows();
+        foreach (var hwnd in shown)
+        {
+            GetWindowThreadProcessId(hwnd, out var pid);
+            if (pid == 0 || pid == (uint)Environment.ProcessId) continue;
+            var game = GameOf((int)pid);
+            if (game != null) return ((int)pid, game);
+        }
+        // Backup: Steam says a game is running and something full-screen (that isn't a browser etc.) is showing.
+        if (SteamRunningAppId() == 0) return null;
+        foreach (var hwnd in shown)
+        {
+            GetWindowThreadProcessId(hwnd, out var pid);
+            if (pid == 0 || pid == (uint)Environment.ProcessId) continue;
+            var name = ProcName((int)pid)?.ToLowerInvariant();
+            if (name != null && IsFullScreen(hwnd) && !NeverGame.Contains(name) && !Browsers.Contains(name) &&
+                !Store.S.IgnoredGames.Any(g => Rules.Same(Path.GetFileName(g), name)))
+                return ((int)pid, name);
+        }
         return null;
     }
 
-    /// <summary>The blocked site in the browser tab that's in front, if any.</summary>
+    /// <summary>A blocked site showing in a browser on any screen (or focused), if any.</summary>
     public static (IntPtr Hwnd, BlockedSite Site)? ForegroundSite()
     {
-        var hwnd = GetForegroundWindow();
-        if (hwnd == IntPtr.Zero) return null;
-        GetWindowThreadProcessId(hwnd, out var pid);
-        if (pid == 0) return null;
-        var exe = Path.GetFileName(ExePath(pid) ?? "").ToLowerInvariant();
-        if (!Browsers.Contains(exe)) return null;
-        var sb = new StringBuilder(512);
-        GetWindowText(hwnd, sb, sb.Capacity);
-        var title = sb.ToString();
-        if (title.Length == 0 || SearchPages.Any(title.Contains)) return null;
-        foreach (var site in Store.S.Settings.Sites)
+        foreach (var hwnd in ShownWindows())
         {
-            var keys = (site.Keywords ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries);
-            if (keys.Any(k => title.Contains(k, StringComparison.OrdinalIgnoreCase))) return (hwnd, site);
+            GetWindowThreadProcessId(hwnd, out var pid);
+            if (pid == 0) continue;
+            var exe = Path.GetFileName(ExePath(pid) ?? ProcName((int)pid) ?? "").ToLowerInvariant();
+            if (!Browsers.Contains(exe)) continue;
+            var sb = new StringBuilder(512);
+            GetWindowText(hwnd, sb, sb.Capacity);
+            var title = sb.ToString();
+            if (title.Length == 0 || SearchPages.Any(title.Contains)) continue;
+            foreach (var site in Store.S.Settings.Sites)
+            {
+                var keys = (site.Keywords ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries);
+                if (keys.Any(k => title.Contains(k, StringComparison.OrdinalIgnoreCase))) return (hwnd, site);
+            }
         }
         return null;
     }
@@ -303,13 +356,21 @@ public static class Games
                 if (proc.WaitForExit(2000)) { n++; continue; }
             }
             catch { continue; }
-            // Still alive: Alt+F4 if it's the window in front.
-            var fg = GetForegroundWindow();
-            GetWindowThreadProcessId(fg, out var fgPid);
-            if (fgPid == pid)
+            // Still alive (anti-cheat blocked it): bring its window forward and Alt+F4 it.
+            try
             {
-                try { SendKeys.SendWait("%{F4}"); n++; } catch { }
+                using var proc = Process.GetProcessById(pid);
+                var win = proc.MainWindowHandle;
+                if (win != IntPtr.Zero)
+                {
+                    SetForegroundWindow(win);
+                    Thread.Sleep(200);
+                }
+                var fg = GetForegroundWindow();
+                GetWindowThreadProcessId(fg, out var fgPid);
+                if (fgPid == pid) { SendKeys.SendWait("%{F4}"); n++; }
             }
+            catch { }
         }
         return n;
     }

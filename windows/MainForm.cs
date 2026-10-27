@@ -122,7 +122,7 @@ public class MainForm : Form
 
         // ---- Games
         Section("Games");
-        Add(L($"Anything from Steam, Epic, Riot, Xbox, EA, Ubisoft, GOG, Rockstar or Roblox counts automatically, at {st.EngagingCostPct}% of the normal cost. Time only counts while the game window is in front.", 10, Theme.Muted));
+        Add(L($"Anything from Steam, Epic, Riot, Xbox, EA, Ubisoft, GOG, Rockstar or Roblox counts automatically, at {st.EngagingCostPct}% of the normal cost. Time counts while the game is showing on any screen (minimize it to stop the clock).", 10, Theme.Muted));
         var steamApp = Games.SteamRunningAppId();
         Add(L(steamApp != 0 ? $"Steam says a game is running right now (app {steamApp}). Full-screen windows count as that game." :
             $"Steam isn't running a game right now. {Games.IndexedCount} games found in your Steam/Epic libraries.", 9, Theme.Muted));
@@ -161,7 +161,7 @@ public class MainForm : Form
 
         // ---- Sites
         Section("Blocked sites");
-        Add(L($"Counted while the tab is in front in Vivaldi, Chrome, Edge, Brave, Firefox or Opera. Movie sites (½) cost {st.EngagingCostPct}%. When you're out of time, the tab closes.", 10, Theme.Muted));
+        Add(L($"Counted while the tab is showing on any screen in Vivaldi, Chrome, Edge, Brave, Firefox or Opera. Movie sites (½) cost {st.EngagingCostPct}%. When you're out of time, the tab closes.", 10, Theme.Muted));
         foreach (var site in st.Sites.ToList())
         {
             var r = Row();
