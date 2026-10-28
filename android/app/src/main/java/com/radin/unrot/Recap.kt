@@ -53,6 +53,24 @@ object Recap {
         return Week(earned, doom, laptop, locked, calls, top, best, s.streak, under, days)
     }
 
+    data class Day(val date: LocalDate, val doomSec: Long, val lockedSec: Long)
+
+    /** The last 7 days, oldest first (doomscrolling includes a synced laptop). */
+    fun series(s: Store): List<Day> {
+        Ledger.flushStats(s)
+        val all = s.obj("stats")
+        val today = LocalDate.now()
+        return (6 downTo 0).map { i ->
+            val day = today.minusDays(i.toLong())
+            val d = all.optJSONObject(day.toString())
+            val dl = if (i == 0) Ledger.remotes(s).sumOf { it.doomOn(day.toString()) } else d?.optLong("dl") ?: 0L
+            Day(day, (d?.optLong("d") ?: 0L) + dl, d?.optLong("l") ?: 0L)
+        }
+    }
+
+    /** Was there any data for this day (so an empty day isn't shown as a "good" day)? */
+    fun hasDay(s: Store, day: LocalDate): Boolean = s.obj("stats").has(day.toString())
+
     fun shareText(ctx: Context, s: Store): String {
         val w = week(ctx, s)
         val sb = StringBuilder("My week with Unrot 📊\n")

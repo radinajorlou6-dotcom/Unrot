@@ -168,6 +168,23 @@ class Store private constructor(ctx: Context) {
         get() = long("lastFocusPaid")
         set(v) = putLong("lastFocusPaid", v)
 
+    // ---- Lifetime counters (levels and badges) ----
+    var lifeLockSec: Long
+        get() = long("lifeLockSec")
+        set(v) = putLong("lifeLockSec", v)
+    var lifeCalls: Long
+        get() = long("lifeCalls")
+        set(v) = putLong("lifeCalls", v)
+    var bestStreak: Int
+        get() = p.getInt("bestStreak", 0)
+        set(v) = p.edit().putInt("bestStreak", v).apply()
+    var lifePhoneDown: Long
+        get() = long("lifePhoneDown")
+        set(v) = putLong("lifePhoneDown", v)
+    var lifePrs: Long
+        get() = long("lifePrs")
+        set(v) = putLong("lifePrs", v)
+
     var recapWeek: String
         get() = str("recapWeek")
         set(v) = putStr("recapWeek", v)

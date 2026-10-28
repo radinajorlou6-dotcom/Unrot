@@ -112,6 +112,7 @@ object Ledger {
             if (total <= target) {
                 val n = s.streak + 1
                 s.streak = n
+                if (n > s.bestStreak) s.bestStreak = n
                 val bonus = when {
                     n == 3 -> st.n("streak3Min")
                     n == 7 -> st.n("streak7Min")
@@ -161,6 +162,8 @@ object Ledger {
             p to a
         }
         if (p.isEmpty() && a.isEmpty()) return
+        p["l"]?.let { s.lifeLockSec = s.lifeLockSec + it }
+        p["c"]?.let { s.lifeCalls = s.lifeCalls + it }
         val all = s.obj("stats")
         val day = today()
         val d = all.optJSONObject(day) ?: JSONObject()

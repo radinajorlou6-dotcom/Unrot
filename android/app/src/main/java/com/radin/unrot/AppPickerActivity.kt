@@ -34,7 +34,7 @@ class AppPickerActivity : Activity() {
         val half = st.halfRate.toMutableSet()
 
         setScreen { root ->
-            root.add(text("Blocked apps", 28f, bold = true))
+            root.add(title("Blocked apps", 30f), 8)
             root.add(
                 text(
                     "Checked apps cost scroll time. Tap the price to switch between full price and $pct% " +
@@ -43,7 +43,7 @@ class AppPickerActivity : Activity() {
                     15f, Col.MUTED,
                 ), 16,
             )
-            root.add(button("Save", Ui.Style.PRIMARY) {
+            root.add(button("Save", Ui.Style.PRIMARY, R.drawable.ic_check_circle) {
                 val r = Rules.propose(s, Rules.current(s).copy(flagged = chosen.toSet(), halfRate = half.filter { it.startsWith("site:") || it in chosen }.toSet())) { p ->
                     apps.firstOrNull { it.pkg == p }?.label ?: p
                 }
@@ -62,6 +62,8 @@ class AppPickerActivity : Activity() {
                     text = app.label + if (app.game) "  🎮" else ""
                     textSize = 17f
                     setTextColor(Col.TEXT)
+                    typeface = Fonts.semi(this@AppPickerActivity)
+                    buttonTintList = android.content.res.ColorStateList.valueOf(Col.VIOLET)
                     isChecked = app.pkg in chosen
                     setPadding(dp(8), dp(10), dp(8), dp(10))
                     setOnCheckedChangeListener { _, on ->

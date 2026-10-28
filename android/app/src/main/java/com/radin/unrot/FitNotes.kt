@@ -53,6 +53,7 @@ object FitNotes {
         }
         s.creditedIds = done
         s.putObj("prMinutes", perDay)
+        if (paid.isNotEmpty()) s.lifePrs = s.lifePrs + paid.size
         return Result(rows.size, recent, paid, unverified, earned, null)
     }
 

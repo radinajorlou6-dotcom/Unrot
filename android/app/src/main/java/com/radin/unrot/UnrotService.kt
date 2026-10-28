@@ -361,7 +361,10 @@ class UnrotService : AccessibilityService() {
                 val base = if (s.pdLocal) s.lastFocusPaid
                 else (dur / (if (s.pdFree) st.freeRatio else st.focusRatio)).toLong()
                 val bonus = base * pct / 100
-                if (bonus > 0) Ledger.credit(s, st, bonus, "phone-down bonus (+$pct%, screen stayed off)")
+                if (bonus > 0) {
+                    Ledger.credit(s, st, bonus, "phone-down bonus (+$pct%, screen stayed off)")
+                    s.lifePhoneDown = s.lifePhoneDown + 1
+                }
             } else {
                 s.log("No phone-down bonus: screen was on for ${s.pdScreenSec / 60} min during the lock-in")
             }
@@ -444,9 +447,9 @@ class UnrotService : AccessibilityService() {
         val half = key in st.halfRate
         v.text = "⏳ " + Ledger.fmt(maxOf(0L, bal)) + if (half) " · ${st.n("engagingCostPct")}%" else ""
         val (bg, fg) = when {
-            bal <= 30 -> 0xEEFF6B6B.toInt() to 0xFF1A0505.toInt()
-            bal <= 120 -> 0xEEFFB454.toInt() to 0xFF1F1405.toInt()
-            else -> 0xE61A1E26.toInt() to Col.ACCENT
+            bal <= 30 -> 0xF0FF5C7A.toInt() to 0xFF2A0610.toInt()
+            bal <= 120 -> 0xF0FFB454.toInt() to 0xFF2A1A05.toInt()
+            else -> 0xEB1B1836.toInt() to Col.GOLD
         }
         cancelHide()
         v.setTextColor(fg)
@@ -483,12 +486,12 @@ class UnrotService : AccessibilityService() {
         val wm = getSystemService(WindowManager::class.java)
         val tv = TextView(this).apply {
             textSize = 15f
-            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            typeface = Fonts.display(this@UnrotService)
             setPadding(dp(12), dp(6), dp(12), dp(6))
             background = GradientDrawable().apply {
                 cornerRadius = dp(20).toFloat()
-                setColor(0xE61A1E26.toInt())
-                setStroke(dp(1), 0x337CD992)
+                setColor(0xEB1B1836.toInt())
+                setStroke(dp(1), 0x668B5CF6)
             }
             elevation = dp(4).toFloat()
         }
