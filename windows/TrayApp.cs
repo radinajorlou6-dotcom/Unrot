@@ -193,7 +193,23 @@ public class TrayApp : ApplicationContext
     /// <summary>The corner countdown, plus big warnings at 15, 5 and 2 minutes (and 30 seconds).</summary>
     void UpdatePill(Settings st, bool game, (IntPtr Hwnd, BlockedSite Site)? site)
     {
-        if ((!game && site == null) || (_block != null && !_block.IsDisposed))
+        if (_block != null && !_block.IsDisposed)
+        {
+            _pill?.HideNow();
+            return;
+        }
+        // During a lock-in (here or on the phone): the lock-in timer, on whatever screen you're using.
+        if (Ledger.FocusActive)
+        {
+            _pill ??= new PillForm();
+            var screenOf = Games.ForegroundWindow();
+            if (Store.S.FocusFree && Ledger.LocalFocus)
+                _pill.ShowOn(screenOf, $"{Ledger.Fmt(Ledger.FreeElapsedSec)}  ·  +{Ledger.FmtShort(Ledger.FreePayout)}", Theme.Accent, Theme.Card, "lock");
+            else
+                _pill.ShowOn(screenOf, $"{Ledger.Fmt(Ledger.FocusRemainingSec)} left", Theme.Text, Theme.Tint(Theme.Violet, Theme.Card, 0.45f), "lock");
+            return;
+        }
+        if (!game && site == null)
         {
             _pill?.HideNow();
             return;
@@ -207,7 +223,7 @@ public class TrayApp : ApplicationContext
             {
                 if (left <= t && _warned.Add(-t)) _pill.Flash($"Overtime: {t / 60} min left. Wrap up the match", 8);
             }
-            _pill.ShowOn(hwnd, $"⏱ OT {Ledger.Fmt(left)}", Color.FromArgb(31, 20, 5), Theme.Warn);
+            _pill.ShowOn(hwnd, $"Overtime {Ledger.Fmt(left)}", Color.FromArgb(42, 26, 5), Theme.Warn, "timer");
             return;
         }
         var avail = Available(st, game, site);
@@ -218,15 +234,15 @@ public class TrayApp : ApplicationContext
             {
                 var what = t >= 60 ? $"{t / 60} min left" : "30 seconds left";
                 var tip = game ? (t >= 300 ? "Don't start a new match" : "Finish up or find a save point") : "Wrap it up";
-                _pill.Flash($"⚠ {what} · {tip}", t >= 300 ? 6 : 10);
+                _pill.Flash($"{what} · {tip}", t >= 300 ? 6 : 10);
                 Balloon(what, tip);
             }
         }
-        var (fgc, bgc) = avail <= 30 ? (Color.FromArgb(26, 5, 5), Color.FromArgb(255, 107, 107))
-            : avail <= 120 ? (Color.FromArgb(31, 20, 5), Theme.Warn)
+        var (fgc, bgc) = avail <= 30 ? (Color.FromArgb(42, 6, 16), Theme.Danger)
+            : avail <= 120 ? (Color.FromArgb(42, 26, 5), Theme.Warn)
             : (Theme.Gold, Theme.Card);
         var half = game || site.Value.Site.Half;
-        _pill.ShowOn(hwnd, "⏳ " + Ledger.Fmt(Math.Max(0, avail)) + (half ? $" · {st.EngagingCostPct}%" : ""), fgc, bgc);
+        _pill.ShowOn(hwnd, Ledger.Fmt(Math.Max(0, avail)) + (half ? $"  ·  {st.EngagingCostPct}%" : ""), fgc, bgc, game ? "sports_esports" : "hourglass_top");
     }
 
     void Enforce(bool gameInFront, (IntPtr Hwnd, BlockedSite Site)? site)

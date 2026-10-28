@@ -1,12 +1,13 @@
+using System.Drawing.Drawing2D;
 using System.Media;
 using System.Runtime.InteropServices;
 
 namespace Unrot;
 
 /// <summary>
-/// A small always-on-top countdown in the corner of whatever screen the game or site is on.
-/// Click-through, never takes focus. Grows into a big banner for warnings (15, 5 and 2 minutes left).
-/// Note: games in "exclusive fullscreen" mode draw over everything; use borderless/windowed to see it.
+/// A small always-on-top pill in the top-right corner of a screen: your time left over games and blocked sites,
+/// or your lock-in timer. Click-through, never takes focus. Grows into a big banner for warnings.
+/// Note: games in "exclusive fullscreen" draw over everything; use borderless/windowed to see it.
 /// The warnings also play a sound, which works either way.
 /// </summary>
 public class PillForm : Form
@@ -17,7 +18,9 @@ public class PillForm : Form
     static readonly IntPtr HWND_TOPMOST = new(-1);
     const uint SWP_NOACTIVATE = 0x10, SWP_SHOWWINDOW = 0x40;
 
-    readonly Label _label;
+    string _text = "", _icon;
+    Color _fg = Theme.Gold, _bg = Theme.Card;
+    bool _flashing;
     string _flash;
     long _flashUntil;
 
@@ -27,17 +30,10 @@ public class PillForm : Form
         ShowInTaskbar = false;
         TopMost = true;
         StartPosition = FormStartPosition.Manual;
-        BackColor = Theme.Card;
-        Opacity = 0.92;
+        BackColor = Theme.Bg;
+        Opacity = 0.94;
         Size = new Size(170, 42);
-        _label = new Label
-        {
-            Dock = DockStyle.Fill,
-            TextAlign = ContentAlignment.MiddleCenter,
-            Font = Theme.Display(13),
-            ForeColor = Theme.Accent,
-        };
-        Controls.Add(_label);
+        DoubleBuffered = true;
     }
 
     protected override bool ShowWithoutActivation => true;
@@ -61,21 +57,55 @@ public class PillForm : Form
         if (loud) { try { SystemSounds.Exclamation.Play(); } catch { } }
     }
 
-    public void ShowOn(IntPtr hwnd, string text, Color fg, Color bg)
+    /// <summary>Shows the pill on the screen that [hwnd] is on (the primary screen if none).</summary>
+    public void ShowOn(IntPtr hwnd, string text, Color fg, Color bg, string icon = "hourglass_top")
     {
         var screen = hwnd != IntPtr.Zero ? Screen.FromHandle(hwnd) : Screen.PrimaryScreen;
-        var flashing = _flashUntil > Store.Now;
-        _label.Text = flashing ? _flash : text;
-        _label.Font = Theme.Display(flashing ? 18 : 13);
-        _label.ForeColor = flashing ? Color.FromArgb(31, 20, 5) : fg;
-        BackColor = flashing ? Theme.Warn : bg;
-        var w = flashing ? 560 : 170;
-        var h = flashing ? 72 : 42;
+        _flashing = _flashUntil > Store.Now;
+        _text = _flashing ? _flash : text;
+        _icon = _flashing ? "warning" : icon;
+        _fg = _flashing ? Color.FromArgb(42, 26, 5) : fg;
+        _bg = _flashing ? Theme.Warn : bg;
+        var font = Theme.Display(_flashing ? 17 : 13);
+        var textW = TextRenderer.MeasureText(_text, font).Width;
+        var iconW = _icon != null ? (_flashing ? 30 : 24) : 0;
+        var w = Math.Max(_flashing ? 420 : 120, textW + iconW + 36);
+        var h = _flashing ? 68 : 42;
         var b = screen.Bounds;
-        var x = flashing ? b.Left + (b.Width - w) / 2 : b.Right - w - 24;
+        var x = _flashing ? b.Left + (b.Width - w) / 2 : b.Right - w - 24;
         var y = b.Top + 24;
         if (!Visible) Show();
         SetWindowPos(Handle, HWND_TOPMOST, x, y, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        Invalidate();
+    }
+
+    protected override void OnResize(EventArgs e)
+    {
+        base.OnResize(e);
+        // Rounded window shape.
+        using var p = Theme.Rounded(new RectangleF(0, 0, Width, Height), Height / 2f);
+        Region = new Region(p);
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var g = e.Graphics;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.Clear(_bg);
+        using (var pen = new Pen(Theme.Alpha(_fg, 90), 1.5f))
+        using (var p = Theme.Rounded(new RectangleF(1, 1, Width - 2.5f, Height - 2.5f), (Height - 2) / 2f))
+            g.DrawPath(pen, p);
+        var font = Theme.Display(_flashing ? 17 : 13);
+        var sz = TextRenderer.MeasureText(_text, font);
+        var iconS = _flashing ? 26 : 20;
+        var iconW = _icon != null ? iconS + 6 : 0;
+        var x = (Width - sz.Width - iconW) / 2;
+        if (_icon != null)
+        {
+            g.DrawImage(Theme.Icon(_icon, _fg, iconS), x, (Height - iconS) / 2, iconS, iconS);
+            x += iconW;
+        }
+        TextRenderer.DrawText(g, _text, font, new Point(x, (Height - sz.Height) / 2), _fg, TextFormatFlags.NoPadding);
     }
 
     public void HideNow()

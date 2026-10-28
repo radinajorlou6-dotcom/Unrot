@@ -258,6 +258,9 @@ public static class Games
         return list;
     }
 
+    /// <summary>The window you're using right now.</summary>
+    public static IntPtr ForegroundWindow() => GetForegroundWindow();
+
     /// <summary>The window of the game found by the last ForegroundGame() call.</summary>
     public static IntPtr LastGameHwnd;
 
