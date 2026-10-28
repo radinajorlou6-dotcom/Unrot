@@ -15,4 +15,9 @@
     <Description>Earn your game time</Description>
   </PropertyGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\icons\*.png" LogicalName="icons/%(Filename)%(Extension)" />
+    <EmbeddedResource Include="Assets\fonts\*.ttf" LogicalName="fonts/%(Filename)%(Extension)" />
+  </ItemGroup>
+
 </Project>

@@ -34,7 +34,7 @@ public class PillForm : Form
         {
             Dock = DockStyle.Fill,
             TextAlign = ContentAlignment.MiddleCenter,
-            Font = new Font("Segoe UI", 13, FontStyle.Bold),
+            Font = Theme.Display(13),
             ForeColor = Theme.Accent,
         };
         Controls.Add(_label);
@@ -66,7 +66,7 @@ public class PillForm : Form
         var screen = hwnd != IntPtr.Zero ? Screen.FromHandle(hwnd) : Screen.PrimaryScreen;
         var flashing = _flashUntil > Store.Now;
         _label.Text = flashing ? _flash : text;
-        _label.Font = new Font("Segoe UI", flashing ? 18 : 13, FontStyle.Bold);
+        _label.Font = Theme.Display(flashing ? 18 : 13);
         _label.ForeColor = flashing ? Color.FromArgb(31, 20, 5) : fg;
         BackColor = flashing ? Theme.Warn : bg;
         var w = flashing ? 560 : 170;

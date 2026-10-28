@@ -157,6 +157,7 @@ public class TrayApp : ApplicationContext
             var whole = (long)_spendAcc;
             if (whole > 0) { Ledger.Spend(whole); _spendAcc -= whole; }
             if (!half) Ledger.AddDoom(1);
+            Ledger.Stat(d => { if (fg != null) d.Game++; else if (half) d.Movie++; else d.Doom++; });
             if (fg != null && Ledger.Balance() > 0) _lastPositivePlaying = Store.Now;
         }
         if (fg != null) _lastGameSeen = Store.Now;
@@ -224,7 +225,7 @@ public class TrayApp : ApplicationContext
         }
         var (fgc, bgc) = avail <= 30 ? (Color.FromArgb(26, 5, 5), Color.FromArgb(255, 107, 107))
             : avail <= 120 ? (Color.FromArgb(31, 20, 5), Theme.Warn)
-            : (Theme.Accent, Theme.Card);
+            : (Theme.Gold, Theme.Card);
         var half = game || site.Value.Site.Half;
         _pill.ShowOn(hwnd, "⏳ " + Ledger.Fmt(Math.Max(0, avail)) + (half ? $" · {st.EngagingCostPct}%" : ""), fgc, bgc);
     }
@@ -432,67 +433,8 @@ public class BlockForm : Form
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
-        using var pen = new Pen(Theme.Accent, 2);
+        using var pen = new Pen(Theme.Violet, 2);
         e.Graphics.DrawRectangle(pen, 1, 1, Width - 3, Height - 3);
-    }
-}
-
-public static class Theme
-{
-    public static readonly Color Bg = Color.FromArgb(15, 17, 21);
-    public static readonly Color Card = Color.FromArgb(26, 30, 38);
-    public static readonly Color Card2 = Color.FromArgb(35, 40, 51);
-    public static readonly Color Text = Color.FromArgb(236, 239, 244);
-    public static readonly Color Muted = Color.FromArgb(154, 163, 178);
-    public static readonly Color Accent = Color.FromArgb(124, 217, 146);
-    public static readonly Color Warn = Color.FromArgb(255, 180, 84);
-
-    public static Label Label(string text, float size, Color color, bool bold = false, int width = 520) => new()
-    {
-        Text = text,
-        Font = new Font("Segoe UI", size, bold ? FontStyle.Bold : FontStyle.Regular),
-        ForeColor = color,
-        AutoSize = true,
-        MaximumSize = new Size(width, 0),
-        Margin = new Padding(0, 0, 0, 8),
-    };
-
-    public static Button Button(string text, Action onClick, bool primary = false, int width = 0)
-    {
-        var b = new Button
-        {
-            Text = text,
-            FlatStyle = FlatStyle.Flat,
-            BackColor = primary ? Accent : Card2,
-            ForeColor = primary ? Color.FromArgb(11, 26, 16) : Text,
-            Font = new Font("Segoe UI", 10, primary ? FontStyle.Bold : FontStyle.Regular),
-            AutoSize = width == 0,
-            Height = 38,
-            Padding = new Padding(10, 4, 10, 4),
-            Margin = new Padding(0, 0, 8, 8),
-            Cursor = Cursors.Hand,
-        };
-        if (width > 0) b.Width = width;
-        b.FlatAppearance.BorderSize = 0;
-        b.Click += (_, _) => onClick();
-        return b;
-    }
-
-    /// <summary>A green hourglass-ish dot for the tray.</summary>
-    public static Icon MakeIcon()
-    {
-        using var bmp = new Bitmap(32, 32);
-        using (var g = Graphics.FromImage(bmp))
-        {
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            g.Clear(Color.Transparent);
-            using var bg = new SolidBrush(Accent);
-            g.FillEllipse(bg, 1, 1, 30, 30);
-            using var dark = new SolidBrush(Color.FromArgb(18, 22, 29));
-            g.FillPolygon(dark, new[] { new Point(10, 8), new Point(22, 8), new Point(16, 16) });
-            g.FillPolygon(dark, new[] { new Point(16, 16), new Point(22, 24), new Point(10, 24) });
-        }
-        return Icon.FromHandle(bmp.GetHicon());
     }
 }
 

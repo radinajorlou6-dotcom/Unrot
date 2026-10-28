@@ -56,11 +56,27 @@ public static class Ledger
         var cap = Rules.Current().MaxBankMin * 60L;
         var add = Math.Min(sec, Math.Max(0, cap - Balance()));
         Store.S.EarnedSec += add;
+        Stat(d => d.Earned += add);
         Store.AddLog($"+{FmtShort(add)} · {reason}" + (add < sec ? " (bank full)" : ""));
         return add;
     }
 
     public static void Spend(long sec) => Store.S.SpentSec += sec;
+
+    /// <summary>Updates today's stats (keeps 14 days).</summary>
+    public static void Stat(Action<DayStat> change)
+    {
+        var t = Today;
+        if (!Store.S.Days.TryGetValue(t, out var d))
+        {
+            d = new DayStat();
+            Store.S.Days[t] = d;
+            foreach (var old in Store.S.Days.Keys.OrderBy(k => k).SkipLast(14).ToList()) Store.S.Days.Remove(old);
+        }
+        change(d);
+    }
+
+    public static DayStat DayOf(string day) => Store.S.Days.TryGetValue(day, out var d) ? d : new DayStat();
 
     // ---------------------------------------------------------------- daily doomscroll cap
 
@@ -136,6 +152,7 @@ public static class Ledger
         var done = FreeElapsedSec;
         var pay = FreePayout;
         ClearFocus();
+        Stat(d => d.Locked += done);
         if (pay > 0) Credit(pay, $"free lock-in, {done / 60} min");
         else Store.AddLog("Ended a free lock-in");
         return pay;
@@ -185,6 +202,8 @@ public static class Ledger
     {
         if (Store.S.FocusFree) return StopFree();
         var pay = EarlyEndPayout();
+        var doneSec = Math.Max(0, Store.S.FocusPlannedSec - Math.Max(0, (Store.S.FocusUntil - Store.Now) / 1000));
+        Stat(d => d.Locked += doneSec);
         var doneMin = Math.Max(0, Store.S.FocusPlannedSec - Math.Max(0, (Store.S.FocusUntil - Store.Now) / 1000)) / 60;
         Store.S.FocusUntil = 0;
         Store.S.FocusPlannedSec = 0;
@@ -199,6 +218,7 @@ public static class Ledger
         if (Store.S.FocusUntil == 0 || Store.Now < Store.S.FocusUntil) return -1;
         if (Store.S.FocusFree) return StopFree();
         var planned = Store.S.FocusPlannedSec;
+        Stat(d => d.Locked += planned);
         Store.S.FocusUntil = 0;
         Store.S.FocusPlannedSec = 0;
         return Credit((long)(planned / Rules.Current().FocusRatio), $"locked in {planned / 60} min");

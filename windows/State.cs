@@ -63,6 +63,16 @@ public class PendingChange
     public string Label { get; set; }
 }
 
+/// <summary>Seconds per day, for the Stats tab.</summary>
+public class DayStat
+{
+    public long Game { get; set; }
+    public long Doom { get; set; }
+    public long Movie { get; set; }
+    public long Locked { get; set; }
+    public long Earned { get; set; }
+}
+
 public class LogLine
 {
     public string Text { get; set; }
@@ -99,6 +109,7 @@ public class AppState
     public long OvertimeUntil { get; set; }
     public long OvertimeSpentStart { get; set; }
     public List<LogLine> Log { get; set; } = new();
+    public Dictionary<string, DayStat> Days { get; set; } = new();
 }
 
 public static class Store
@@ -139,6 +150,7 @@ public static class Store
         S.ExtraGames ??= new();
         S.IgnoredGames ??= new();
         S.Log ??= new();
+        S.Days ??= new();
         Save();
     }
 

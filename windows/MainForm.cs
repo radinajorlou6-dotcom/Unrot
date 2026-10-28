@@ -1,37 +1,76 @@
+using System.Drawing.Drawing2D;
 using System.Globalization;
 
 namespace Unrot;
 
-/// <summary>The window you get from the tray icon.</summary>
+/// <summary>The window you get from the tray icon: a sidebar with Home, Earn, Stats and Settings.</summary>
 public class MainForm : Form
 {
+    enum Tab { Home, Earn, Stats, Settings }
+
     readonly TrayApp _app;
     readonly FlowLayoutPanel _panel;
     readonly System.Windows.Forms.Timer _live = new() { Interval = 1000 };
-    Label _balance, _focusLine;
-    const int W = 540;
+    readonly List<(NavItem Item, Tab Tab)> _nav = new();
+    readonly Label _sideBalance;
+    Tab _tab = Tab.Home;
+    Ring _balanceRing, _focusRing;
+    Control _focusPay;
+    bool _focusWasActive;
+    const int CW = 660; // card width
 
     public MainForm(TrayApp app)
     {
         _app = app;
         Text = "Unrot";
         Icon = Theme.MakeIcon();
-        Size = new Size(620, 860);
-        MinimumSize = new Size(520, 500);
+        Size = new Size(1000, 760);
+        MinimumSize = new Size(900, 560);
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = Theme.Bg;
         ForeColor = Theme.Text;
-        Font = new Font("Segoe UI", 10);
+        Font = Theme.Body(10);
 
+        // ---- content (added first so it fills what the sidebar leaves)
         _panel = new FlowLayoutPanel
         {
             Dock = DockStyle.Fill,
             FlowDirection = FlowDirection.TopDown,
             WrapContents = false,
             AutoScroll = true,
-            Padding = new Padding(24, 20, 24, 20),
+            Padding = new Padding(36, 26, 24, 26),
+            BackColor = Theme.Bg,
         };
         Controls.Add(_panel);
+
+        // ---- sidebar
+        var side = new Panel { Dock = DockStyle.Left, Width = 200, BackColor = Theme.Side };
+        var nav = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            BackColor = Theme.Side,
+            Padding = new Padding(0, 22, 0, 0),
+        };
+        var logo = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, Margin = new Padding(22, 0, 0, 22), BackColor = Theme.Side };
+        logo.Controls.Add(new PictureBox { Image = Theme.Icon("hourglass_top", Theme.Gold, 26), Size = new Size(26, 26), Margin = new Padding(0, 4, 8, 0) });
+        logo.Controls.Add(new Label { Text = "Unrot", Font = Theme.Display(20), ForeColor = Theme.Text, AutoSize = true, BackColor = Theme.Side });
+        nav.Controls.Add(logo);
+        foreach (var (t, label, icon) in new[] { (Tab.Home, "Home", "home"), (Tab.Earn, "Earn", "bolt"), (Tab.Stats, "Stats", "bar_chart"), (Tab.Settings, "Settings", "settings") })
+        {
+            var item = new NavItem(label, icon, () => SwitchTab(t));
+            _nav.Add((item, t));
+            nav.Controls.Add(item);
+        }
+        side.Controls.Add(nav);
+        _sideBalance = new Label
+        {
+            Dock = DockStyle.Bottom, Height = 70, TextAlign = ContentAlignment.MiddleCenter,
+            Font = Theme.Display(16), ForeColor = Theme.Gold, BackColor = Theme.Side,
+        };
+        side.Controls.Add(_sideBalance);
+        Controls.Add(side);
 
         _live.Tick += (_, _) => Live();
         _live.Start();
@@ -43,91 +82,274 @@ public class MainForm : Form
         Rebuild();
     }
 
+    void SwitchTab(Tab t)
+    {
+        _tab = t;
+        Rebuild();
+        _panel.AutoScrollPosition = new Point(0, 0);
+    }
+
     static string BalanceText()
     {
         var b = Ledger.Balance();
         return b < 0 ? "-" + Ledger.Fmt(-b) : Ledger.Fmt(b);
     }
 
+    static Color BalanceColor()
+    {
+        var b = Ledger.Balance();
+        return b <= 0 ? Theme.Danger : b <= 120 ? Theme.Warn : Theme.Gold;
+    }
+
+    static float BalanceFraction() => Math.Clamp(Ledger.Balance() / (Rules.Current().MaxBankMin * 60f), 0f, 1f);
+
     void Live()
     {
-        if (!Visible || _balance == null) return;
-        _balance.Text = BalanceText();
-        if (_focusLine != null)
+        if (!Visible) return;
+        _sideBalance.Text = "⏳ " + BalanceText();
+        _sideBalance.ForeColor = BalanceColor();
+        if (_balanceRing != null)
         {
-            if (!Ledger.FocusActive) Rebuild();
-            else if (Store.S.FocusFree && Ledger.LocalFocus)
-                _focusLine.Text = $"🔒 Free lock-in · {Ledger.Fmt(Ledger.FreeElapsedSec)} so far · +{Ledger.FmtShort(Ledger.FreePayout)}";
-            else _focusLine.Text = $"🔒 Locked in · {Ledger.Fmt(Ledger.FocusRemainingSec)} left";
+            _balanceRing.Big = BalanceText();
+            _balanceRing.Color = BalanceColor();
+            _balanceRing.Fraction = BalanceFraction();
+            _balanceRing.Invalidate();
+        }
+        var active = Ledger.FocusActive;
+        if (active != _focusWasActive) { Rebuild(); return; }
+        if (_focusRing != null && active)
+        {
+            if (Store.S.FocusFree && Ledger.LocalFocus)
+            {
+                _focusRing.Big = Ledger.Fmt(Ledger.FreeElapsedSec);
+                _focusRing.Fraction = Ledger.FreeElapsedSec % 3600 / 3600f;
+                if (_focusPay != null) _focusPay.Text = $"+{Ledger.FmtShort(Ledger.FreePayout)} so far";
+            }
+            else
+            {
+                _focusRing.Big = Ledger.Fmt(Ledger.FocusRemainingSec);
+                if (Ledger.LocalFocus && Store.S.FocusPlannedSec > 0)
+                    _focusRing.Fraction = 1f - Ledger.FocusRemainingSec / (float)Store.S.FocusPlannedSec;
+            }
+            _focusRing.Invalidate();
         }
     }
 
-    Label L(string text, float size = 10, Color? color = null, bool bold = false) =>
-        Theme.Label(text, size, color ?? Theme.Text, bold, W);
+    // ================================================================== building blocks
+
+    Label L(string text, float size = 10, Color? color = null, bool bold = false, int width = CW - 40) =>
+        Theme.Label(text, size, color ?? Theme.Text, bold, width);
 
     void Add(Control c) => _panel.Controls.Add(c);
 
-    void Section(string title)
+    void PageTitle(string title, string sub = null)
     {
-        var l = L(title, 14, Theme.Text, true);
-        l.Margin = new Padding(0, 18, 0, 6);
-        Add(l);
+        var t = L(title, 24, Theme.Text, true, CW);
+        t.Margin = new Padding(0, 0, 0, sub == null ? 16 : 2);
+        Add(t);
+        if (sub != null)
+        {
+            var s = L(sub, 10.5f, Theme.Muted, false, CW);
+            s.Margin = new Padding(0, 0, 0, 16);
+            Add(s);
+        }
     }
 
-    FlowLayoutPanel Row()
+    Card NewCard(string title = null, string icon = null, Color? color = null, Control trailing = null)
     {
-        var r = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, WrapContents = true, MaximumSize = new Size(W, 0) };
-        Add(r);
+        var c = new Card(CW);
+        if (title != null)
+        {
+            var r = Row(c);
+            r.Margin = new Padding(0, 0, 0, 12);
+            if (icon != null) r.Controls.Add(new IconBadge(icon, color ?? Theme.Violet, 34) { Margin = new Padding(0, 0, 10, 0) });
+            var t = L(title, 15, Theme.Text, true);
+            t.Margin = new Padding(0, 4, 12, 0);
+            r.Controls.Add(t);
+            if (trailing != null) { trailing.Margin = new Padding(0, 6, 0, 0); r.Controls.Add(trailing); }
+        }
+        Add(c);
+        return c;
+    }
+
+    static FlowLayoutPanel Row(Control parent, int width = 0)
+    {
+        var r = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = true,
+            BackColor = Color.Transparent,
+            Margin = new Padding(0, 0, 0, 6),
+        };
+        if (width > 0) r.MaximumSize = new Size(width, 0);
+        parent.Controls.Add(r);
         return r;
     }
+
+    static FlowLayoutPanel Column(Control parent, int width)
+    {
+        var c = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            BackColor = Color.Transparent,
+            MaximumSize = new Size(width, 0),
+            Margin = new Padding(0),
+        };
+        parent.Controls.Add(c);
+        return c;
+    }
+
+    static GameButton Btn(string text, Action onClick, GameButton.Kind kind = GameButton.Kind.Secondary, string icon = null, int width = 0) =>
+        new(text, kind, onClick, icon, width);
+
+    /// <summary>A label + value line that opens a small editor, used for rules.</summary>
+    NumericUpDown Num(double value, decimal min, decimal max, int decimals) => new()
+    {
+        Minimum = min,
+        Maximum = max,
+        DecimalPlaces = decimals,
+        Increment = decimals > 0 ? 0.5m : 1,
+        Value = Math.Clamp((decimal)value, min, max),
+        Width = 110,
+        BackColor = Theme.Card2,
+        ForeColor = Theme.Text,
+        BorderStyle = BorderStyle.None,
+        Font = Theme.Heavy(11),
+        Margin = new Padding(0, 0, 0, 0),
+    };
+
+    void RuleLine(Card c, string label, Control input)
+    {
+        var r = Row(c, c.Inner);
+        r.WrapContents = false;
+        var l = L(label, 10, Theme.Text, false, c.Inner - 130);
+        l.Width = c.Inner - 130;
+        l.AutoSize = false;
+        l.Height = 28;
+        l.TextAlign = ContentAlignment.MiddleLeft;
+        l.Margin = new Padding(0, 0, 10, 0);
+        r.Controls.Add(l);
+        input.Margin = new Padding(0, 3, 0, 0);
+        r.Controls.Add(input);
+    }
+
+    void Header(Card c, string text)
+    {
+        var l = L(text.ToUpperInvariant(), 9, Theme.Violet, true);
+        l.Margin = new Padding(0, 10, 0, 6);
+        c.Controls.Add(l);
+    }
+
+    // ================================================================== tabs
 
     public void Rebuild()
     {
         if (IsDisposed) return;
+        _focusWasActive = Ledger.FocusActive;
+        _balanceRing = null; _focusRing = null; _focusPay = null;
+        foreach (var (item, t) in _nav) { item.Selected = t == _tab; item.Invalidate(); }
         _panel.SuspendLayout();
+        foreach (Control c in _panel.Controls.Cast<Control>().ToList()) c.Dispose();
         _panel.Controls.Clear();
-        _focusLine = null;
-        var st = Rules.Current();
-
-        // ---- Balance
-        Add(L("UNROT", 9, Theme.Muted, true));
-        var balNow = Ledger.Balance();
-        _balance = L(BalanceText(), 40, balNow < 0 ? Theme.Warn : Theme.Accent, true);
-        _balance.Margin = new Padding(0);
-        Add(_balance);
-        Add(L(balNow > 0 ? "of game time (shared with your phone if synced)"
-            : balNow < 0 ? $"You owe {Ledger.FmtShort(-balNow)} from overtime. What you earn next pays it back first."
-            : "Out of game time. Lock in to earn more.", 10, balNow < 0 ? Theme.Warn : Theme.Muted));
-        if (Ledger.OvertimeActive)
-            Add(L($"⏱ Overtime: {Ledger.Fmt((Store.S.OvertimeUntil - Store.Now) / 1000)} left to finish the match", 11, Theme.Warn, true));
-        var doom = Ledger.DoomToday();
-        Add(L($"📱 Doomscrolled today: {doom / 60} of {st.DailyCapMin} min (social sites here + scroll apps on your phone)", 9,
-            doom >= st.DailyCapMin * 60L ? Theme.Warn : Theme.Muted));
-
-        // ---- Lock in
-        Section("Lock in");
-        if (Ledger.LocalFocus && Store.S.FocusFree)
+        try
         {
-            _focusLine = L($"🔒 Free lock-in · {Ledger.Fmt(Ledger.FreeElapsedSec)} so far · +{Ledger.FmtShort(Ledger.FreePayout)}", 13, Theme.Accent, true);
-            Add(_focusLine);
-            Add(L($"Stop whenever; you're paid for every minute at {Ledger.FmtRatio(st.FreeRatio)}:1. 10 min without touching the mouse or keyboard pauses it.", 10, Theme.Muted));
-            Row().Controls.Add(Theme.Button("Stop & collect", () =>
+            switch (_tab)
             {
-                var got = Ledger.StopFree();
-                Store.Save();
-                _ = _app.SyncNow();
-                MessageBox.Show($"+{Ledger.FmtShort(got)} 💪", "Unrot");
-                Rebuild();
-            }, true));
+                case Tab.Home: HomeTab(); break;
+                case Tab.Earn: EarnTab(); break;
+                case Tab.Stats: StatsTab(); break;
+                default: SettingsTab(); break;
+            }
         }
-        else if (Ledger.FocusActive)
+        catch (Exception e)
         {
-            _focusLine = L($"🔒 Locked in · {Ledger.Fmt(Ledger.FocusRemainingSec)} left", 13, Theme.Accent, true);
-            Add(_focusLine);
-            if (Ledger.LocalFocus)
+            Add(L("Something broke on this screen 😬 Send this to Claude:", 12, Theme.Warn, true, CW));
+            Add(L(e.ToString(), 9, Theme.Muted, false, CW));
+        }
+        _panel.ResumeLayout();
+        Live();
+    }
+
+    // ---------------------------------------------------------------- HOME
+
+    void HomeTab()
+    {
+        var st = Rules.Current();
+        PageTitle("Home", DateTime.Now.ToString("dddd, MMMM d", CultureInfo.CurrentCulture));
+
+        // Hero: balance ring + what's going on.
+        var hero = NewCard();
+        var hr = Row(hero, hero.Inner);
+        hr.WrapContents = false;
+        _balanceRing = new Ring(200) { Big = BalanceText(), Small = "game & scroll time", Color = BalanceColor(), Fraction = BalanceFraction(), Thickness = 15 };
+        _balanceRing.Margin = new Padding(0, 0, 24, 6);
+        hr.Controls.Add(_balanceRing);
+        var info = Column(hr, hero.Inner - 230);
+        var bal = Ledger.Balance();
+        info.Controls.Add(L(bal > 0 ? "Shared with your phone if synced." :
+            bal < 0 ? $"You owe {Ledger.FmtShort(-bal)} from overtime. What you earn next pays it back first." :
+            "Out of time. Lock in to earn more.", 11, bal <= 0 ? Theme.Warn : Theme.Muted, false, hero.Inner - 230));
+        if (Ledger.OvertimeActive)
+        {
+            info.Controls.Add(new Chip($"Overtime: {Ledger.Fmt((Store.S.OvertimeUntil - Store.Now) / 1000)} left", Theme.Warn) { Margin = new Padding(0, 4, 0, 10) });
+        }
+        var doom = Ledger.DoomToday();
+        var cap = st.DailyCapMin * 60L;
+        var dl = L("Doomscrolling today", 10.5f, Theme.Text, true);
+        dl.Margin = new Padding(0, 14, 0, 2);
+        info.Controls.Add(dl);
+        info.Controls.Add(new Bar(hero.Inner - 240, 12) { Fraction = doom / (float)cap, Color = doom >= cap ? Theme.Danger : doom > cap / 2 ? Theme.Warn : Theme.Accent });
+        info.Controls.Add(L($"{doom / 60} of {st.DailyCapMin} min (social sites here + scroll apps on your phone)", 9, Theme.Muted, false, hero.Inner - 230));
+        var fg = Games.ForegroundGame();
+        var steam = Games.SteamRunningAppId();
+        var playing = L(fg != null ? $"🎮 Playing {Path.GetFileNameWithoutExtension(fg.Value.Path)} at {st.EngagingCostPct}% cost"
+            : steam != 0 ? "🎮 Steam says a game is running" : "No game showing right now", 10, fg != null ? Theme.Accent : Theme.Muted, false, hero.Inner - 230);
+        playing.Margin = new Padding(0, 12, 0, 0);
+        info.Controls.Add(playing);
+
+        LockInCard(st);
+    }
+
+    void LockInCard(Settings st)
+    {
+        var c = NewCard("Lock in", "lock", Theme.Violet, new Chip($"{Ledger.FmtRatio(st.FocusRatio)} : 1", Theme.Violet));
+        if (Ledger.FocusActive)
+        {
+            var free = Store.S.FocusFree && Ledger.LocalFocus;
+            var r = Row(c, c.Inner);
+            r.WrapContents = false;
+            _focusRing = new Ring(170)
             {
-                Add(L($"Finish to earn {Ledger.FmtShort((long)(Store.S.FocusPlannedSec / st.FocusRatio))}.", 10, Theme.Muted));
-                Row().Controls.Add(Theme.Button($"End early ({st.EarlyEndPct}% pay)", () =>
+                Big = free ? Ledger.Fmt(Ledger.FreeElapsedSec) : Ledger.Fmt(Ledger.FocusRemainingSec),
+                Small = free ? "so far" : "left",
+                Color = free ? Theme.Accent : Theme.Violet,
+                Thickness = 12,
+            };
+            _focusRing.Margin = new Padding(0, 0, 24, 6);
+            r.Controls.Add(_focusRing);
+            var col = Column(r, c.Inner - 200);
+            if (free)
+            {
+                _focusPay = new Chip($"+{Ledger.FmtShort(Ledger.FreePayout)} so far", Theme.Accent) { Margin = new Padding(0, 10, 0, 10) };
+                col.Controls.Add(_focusPay);
+                col.Controls.Add(L($"Free lock-in at {Ledger.FmtRatio(st.FreeRatio)}:1. Stop whenever; you're paid for every minute. {st.IdleMin} min without touching the mouse or keyboard pauses it.", 10, Theme.Muted, false, c.Inner - 200));
+                col.Controls.Add(Btn("Stop & collect", () =>
+                {
+                    var got = Ledger.StopFree();
+                    Store.Save();
+                    _ = _app.SyncNow();
+                    MessageBox.Show($"+{Ledger.FmtShort(got)} 💪", "Unrot");
+                    Rebuild();
+                }, GameButton.Kind.Success, "check_circle"));
+            }
+            else if (Ledger.LocalFocus)
+            {
+                col.Controls.Add(new Chip($"+{Ledger.FmtShort((long)(Store.S.FocusPlannedSec / st.FocusRatio))} when it ends", Theme.Accent) { Margin = new Padding(0, 10, 0, 10) });
+                col.Controls.Add(L("Games, blocked sites (and your phone's blocked apps) are off until then.", 10, Theme.Muted, false, c.Inner - 200));
+                col.Controls.Add(Btn($"End early ({st.EarlyEndPct}% pay)", () =>
                 {
                     var pay = Ledger.EarlyEndPayout();
                     var full = (long)(Store.S.FocusPlannedSec / st.FocusRatio);
@@ -138,80 +360,204 @@ public class MainForm : Form
                         _ = _app.SyncNow();
                         Rebuild();
                     }
-                }));
+                }, GameButton.Kind.Danger, "stop"));
             }
-            else Add(L(Ledger.RemoteFocusFree ? "Free lock-in running on your phone." : "Started on your phone.", 10, Theme.Muted));
+            else
+            {
+                col.Controls.Add(L(Ledger.RemoteFocusFree ? "Free lock-in running on your phone." : "Started on your phone. Games are off until it ends.", 10.5f, Theme.Muted, false, c.Inner - 200));
+            }
+            return;
         }
-        else
+        c.Controls.Add(L("Games and blocked sites are off until the timer ends. Study, work, anything real.", 10, Theme.Muted, false, c.Inner));
+        var tiles = Row(c, c.Inner);
+        tiles.Margin = new Padding(0, 6, 0, 4);
+        var tw = (c.Inner - 30) / 4;
+        foreach (var m in new[] { 25, 45, 60, 90 })
         {
-            Add(L($"Study or work. Every {Ledger.FmtRatio(st.FocusRatio)} min earns 1 min of game time, paid when the timer ends (end early and you get {st.EarlyEndPct}% for the time you did). Games (and your phone's blocked apps) are off until then.", 10, Theme.Muted));
-            var r = Row();
-            foreach (var m in new[] { 25, 45, 60, 90 })
-                r.Controls.Add(Theme.Button($"{m} min  (+{Ledger.FmtShort((long)(m * 60 / st.FocusRatio))})", () => { _app.StartFocus(m); Rebuild(); }, m == 25));
-            Row().Controls.Add(Theme.Button($"Free lock-in · stop anytime · {Ledger.FmtRatio(st.FreeRatio)}:1", () => { _app.StartFree(); Rebuild(); }));
-            if (st.IdleMin > 0) Add(L($"Lock-ins pause after {st.IdleMin} min without mouse or keyboard.", 9, Theme.Muted));
+            tiles.Controls.Add(Btn($"{m} min · +{Ledger.FmtShort((long)(m * 60 / st.FocusRatio))}",
+                () => { _app.StartFocus(m); Rebuild(); }, m == 25 ? GameButton.Kind.Primary : GameButton.Kind.Secondary, null, tw));
         }
+        c.Controls.Add(Btn($"Free lock-in · stop anytime · {Ledger.FmtRatio(st.FreeRatio)}:1", () => { _app.StartFree(); Rebuild(); },
+            GameButton.Kind.Success, "play_arrow", c.Inner));
+        c.Controls.Add(L($"End a timed one early for {st.EarlyEndPct}% pay. Lock-ins pause after {st.IdleMin} min without mouse or keyboard. Keep your phone screen off for a bonus.", 9, Theme.Muted, false, c.Inner));
+    }
+
+    // ---------------------------------------------------------------- EARN
+
+    void EarnTab()
+    {
+        var st = Rules.Current();
+        PageTitle("Earn time", "Every quest is checked by a timer, your watch or your call log. No honor system.");
+        LockInCard(st);
+
+        var c = NewCard("Quests on your phone", "bolt", Theme.Gold);
+        c.Controls.Add(L("These are tracked by the Unrot phone app. With sync on, the time shows up here too.", 10, Theme.Muted, false, c.Inner));
+        void Quest(string icon, Color color, string name, string desc, string reward)
+        {
+            var r = Row(c, c.Inner);
+            r.WrapContents = false;
+            r.Margin = new Padding(0, 6, 0, 6);
+            r.Controls.Add(new IconBadge(icon, color, 36) { Margin = new Padding(0, 0, 12, 0) });
+            var col = Column(r, c.Inner - 170);
+            col.Width = c.Inner - 170;
+            var n = L(name, 11, Theme.Text, true, c.Inner - 170);
+            n.Margin = new Padding(0, 0, 0, 0);
+            col.Controls.Add(n);
+            col.Controls.Add(L(desc, 9, Theme.Muted, false, c.Inner - 170));
+            r.Controls.Add(new Chip(reward, color) { Margin = new Padding(8, 6, 0, 0) });
+        }
+        Quest("call", Theme.Accent, "Call family", "A 5+ min call, once per person every 3h", "+10 min");
+        Quest("fitness_center", Theme.Fire, "Work out", "Gym, soccer, anything your watch logs", "3 min → 1");
+        Quest("directions_walk", Theme.Blue, "Steps", "Up to 30 min a day", "+2 / 1,000");
+        Quest("bedtime", Color.FromArgb(124, 156, 255), "Sleep on time", "Asleep by bedtime, 6h+", "+15 min");
+        Quest("directions_run", Theme.Gold, "Run PR", "Beat your best pace on a 2+ km run", "+15 min");
+        Quest("trophy", Theme.Gold, "Gym PR", "A new best in FitNotes, verified by your watch", "+15 min");
+        Quest("local_fire_department", Theme.Fire, "Streak", "Stay under your doomscroll target each day", "+10/30/60");
+        Quest("mobile_off", Theme.Blue, "Phone down", "Phone screen off for a whole lock-in", "+20%");
+
+        var o = NewCard("Overtime", "timer", Theme.Warn);
+        o.Controls.Add(L($"Run out mid-match? The out-of-time box offers up to {Ledger.OvertimeMin} min to finish it. It's borrowed: your balance goes negative and you pay it back" +
+            (st.PaybackMult != 1 ? $" at {st.PaybackMult.ToString("0.##", CultureInfo.InvariantCulture)}×" : "") +
+            " from what you earn next. Only offered if you ran out while playing, and not while you're still in debt.", 10, Theme.Muted, false, o.Inner));
+    }
+
+    // ---------------------------------------------------------------- STATS
+
+    void StatsTab()
+    {
+        var st = Rules.Current();
+        PageTitle("Stats", "This laptop, the last 7 days.");
+        var days = Enumerable.Range(0, 7).Select(i => DateTime.Now.Date.AddDays(i - 6)).ToList();
+        var stats = days.Select(d => Ledger.DayOf(d.ToString("yyyy-MM-dd"))).ToList();
+        var labels = days.Select(d => d.DayOfWeek.ToString()[..1]).ToArray();
+        var today = stats[^1];
+
+        // Today tiles
+        var tiles = Row(_panel, CW + 20);
+        tiles.Margin = new Padding(0, 0, 0, 4);
+        void Tile(string icon, Color color, string value, string label)
+        {
+            var t = new Card((CW - 36) / 4) { Padding = new Padding(16, 14, 12, 8), Margin = new Padding(0, 0, 12, 14) };
+            t.Controls.Add(new PictureBox { Image = Theme.Icon(icon, color, 22), Size = new Size(22, 22), Margin = new Padding(0, 0, 0, 6), BackColor = Color.Transparent });
+            var v = L(value, 18, Theme.Text, true, t.Inner);
+            v.Margin = new Padding(0, 0, 0, 0);
+            t.Controls.Add(v);
+            t.Controls.Add(L(label, 9, Theme.Muted, false, t.Inner));
+            tiles.Controls.Add(t);
+        }
+        static string Hm(long sec) => sec >= 3600 ? $"{sec / 3600}h {sec % 3600 / 60}m" : $"{sec / 60}m";
+        Tile("sports_esports", Theme.Fire, Hm(today.Game), "gaming today");
+        Tile("apps", Theme.Danger, Hm(today.Doom), "social sites today");
+        Tile("lock", Theme.Violet, Hm(today.Locked), "locked in today");
+        Tile("hourglass_top", Theme.Gold, Hm(today.Earned), "earned today");
+
+        Card ChartCard(string title, string icon, Color color, float[] values, float? target, Func<float, Color> colorFor, string note)
+        {
+            var c = NewCard(title, icon, color);
+            c.Controls.Add(new Chart(c.Inner, 150) { Values = values, Labels = labels, Target = target, ColorFor = colorFor });
+            c.Controls.Add(L(note, 9, Theme.Muted, false, c.Inner));
+            return c;
+        }
+        ChartCard("Gaming", "sports_esports", Theme.Fire, stats.Select(s => s.Game / 60f).ToArray(), null, _ => Theme.Fire,
+            $"Minutes per day. Games cost {st.EngagingCostPct}% of the normal rate.");
+        ChartCard("Locked in", "timer", Theme.Violet, stats.Select(s => s.Locked / 60f).ToArray(), null, _ => Theme.Violet,
+            "Minutes of lock-ins finished (or ended early) on this laptop.");
+        var cap = st.DailyCapMin;
+        ChartCard("Social sites", "public", Theme.Danger, stats.Select(s => s.Doom / 60f).ToArray(), cap, v => v >= cap ? Theme.Danger : Theme.Accent,
+            $"Minutes per day on this laptop. Dashed line = your {cap} min daily limit (shared with your phone).");
+
+        if (Store.S.Log.Count > 0)
+        {
+            var c = NewCard("Recent", "schedule", Theme.Blue);
+            foreach (var l in Store.S.Log.Take(14))
+            {
+                var when = DateTimeOffset.FromUnixTimeMilliseconds(l.Ts).ToLocalTime().ToString("ddd h:mm tt", CultureInfo.CurrentCulture);
+                var r = Row(c, c.Inner);
+                r.WrapContents = false;
+                var good = l.Text.StartsWith("+");
+                r.Controls.Add(new Dot(good ? Theme.Accent : Theme.Stroke) { Margin = new Padding(0, 6, 10, 0) });
+                var col = Column(r, c.Inner - 30);
+                var t = L(l.Text, 10, good ? Theme.Text : Theme.Muted, false, c.Inner - 30);
+                t.Margin = new Padding(0);
+                col.Controls.Add(t);
+                col.Controls.Add(L(when, 8.5f, Theme.Muted, false, c.Inner - 30));
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- SETTINGS
+
+    void SettingsTab()
+    {
+        var st = Rules.Current();
+        PageTitle("Settings");
 
         // ---- Games
-        Section("Games");
-        Add(L($"Anything from Steam, Epic, Riot, Xbox, EA, Ubisoft, GOG, Rockstar or Roblox counts automatically, at {st.EngagingCostPct}% of the normal cost. Time counts while the game is showing on any screen (minimize it to stop the clock).", 10, Theme.Muted));
+        var g = NewCard("Games", "sports_esports", Theme.Fire);
+        g.Controls.Add(L($"Anything from Steam, Epic, Riot, Xbox, EA, Ubisoft, GOG, Rockstar or Roblox counts automatically, at {st.EngagingCostPct}% cost. Time counts while the game is showing on any screen; minimize it to stop the clock.", 10, Theme.Muted, false, g.Inner));
         var steamApp = Games.SteamRunningAppId();
-        Add(L(steamApp != 0 ? $"Steam says a game is running right now (app {steamApp}). Full-screen windows count as that game." :
-            $"Steam isn't running a game right now. {Games.IndexedCount} games found in your Steam/Epic libraries.", 9, Theme.Muted));
+        g.Controls.Add(new Chip(steamApp != 0 ? $"Steam: a game is running (app {steamApp})" : $"{Games.IndexedCount} games found in your libraries", Theme.Fire) { Margin = new Padding(0, 0, 0, 10) });
         var running = Games.Running();
-        if (running.Count > 0)
+        foreach (var x in running.GroupBy(x => x.Path, StringComparer.OrdinalIgnoreCase).Select(x => x.First()))
         {
-            Add(L("Running now:", 10, Theme.Text, true));
-            foreach (var g in running.GroupBy(x => x.Path, StringComparer.OrdinalIgnoreCase).Select(x => x.First()))
+            var r = Row(g, g.Inner);
+            var nl = L("Running: " + Path.GetFileName(x.Path), 10, Theme.Text, true);
+            nl.Margin = new Padding(0, 8, 10, 0);
+            r.Controls.Add(nl);
+            r.Controls.Add(Btn("Not a game", () =>
             {
-                var r = Row();
-                r.Controls.Add(L(Path.GetFileName(g.Path), 10));
-                r.Controls.Add(Theme.Button("Not a game", () =>
-                {
-                    var now = Rules.IgnoreGame(g.Path);
-                    MessageBox.Show(now ? "Done." : "Unrot will stop counting it in 24 hours (the PIN skips the wait).", "Unrot");
-                    Rebuild();
-                }));
-            }
+                var now = Rules.IgnoreGame(x.Path);
+                MessageBox.Show(now ? "Done." : "Unrot will stop counting it in 24 hours (the PIN skips the wait).", "Unrot");
+                Rebuild();
+            }, GameButton.Kind.Ghost));
         }
-        foreach (var g in Store.S.ExtraGames.ToList())
+        foreach (var x in Store.S.ExtraGames.ToList())
         {
-            var r = Row();
-            r.Controls.Add(L("➕ " + Path.GetFileName(g), 10));
-            r.Controls.Add(Theme.Button("Remove", () =>
+            var r = Row(g, g.Inner);
+            var nl = L("Added: " + Path.GetFileName(x), 10);
+            nl.Margin = new Padding(0, 8, 10, 0);
+            r.Controls.Add(nl);
+            r.Controls.Add(Btn("Remove", () =>
             {
-                var now = Rules.RemoveGame(g);
+                var now = Rules.RemoveGame(x);
                 MessageBox.Show(now ? "Removed." : "It'll stop counting in 24 hours (the PIN skips the wait).", "Unrot");
                 Rebuild();
-            }));
+            }, GameButton.Kind.Ghost));
         }
-        Row().Controls.Add(Theme.Button("Add a game (.exe)…", () =>
+        g.Controls.Add(Btn("Add a game (.exe)…", () =>
         {
             using var dlg = new OpenFileDialog { Filter = "Programs (*.exe)|*.exe", Title = "Pick the game's .exe" };
             if (dlg.ShowDialog() == DialogResult.OK) { Rules.AddGame(dlg.FileName); Rebuild(); }
-        }));
+        }, GameButton.Kind.Secondary, "add"));
 
         // ---- Sites
-        Section("Blocked sites");
-        Add(L($"Counted while the tab is showing on any screen in Vivaldi, Chrome, Edge, Brave, Firefox or Opera. Movie sites (½) cost {st.EngagingCostPct}%. When you're out of time, the tab closes.", 10, Theme.Muted));
-        foreach (var site in st.Sites.ToList())
+        var s = NewCard("Blocked sites", "public", Theme.Warn);
+        s.Controls.Add(L($"Counted while the tab is showing on any screen in Vivaldi, Chrome, Edge, Brave, Firefox or Opera. Movie sites cost {st.EngagingCostPct}%. Out of time = the tab closes.", 10, Theme.Muted, false, s.Inner));
+        foreach (var site in st.Sites.OrderBy(x => !x.Half).ThenBy(x => x.Domain).ToList())
         {
-            var r = Row();
-            r.Controls.Add(L($"{site.Domain}{(site.Half ? $"  ({st.EngagingCostPct}%)" : "")}", 10));
-            r.Controls.Add(Theme.Button(site.Half ? "Make full price" : $"Make {st.EngagingCostPct}%", () =>
+            var r = Row(s, s.Inner);
+            r.WrapContents = false;
+            r.Controls.Add(new PictureBox { Image = Theme.Icon(site.Half ? "movie" : "public", site.Half ? Theme.Accent : Theme.Muted, 18), Size = new Size(18, 18), Margin = new Padding(0, 8, 8, 0), BackColor = Color.Transparent });
+            var dl = L(site.Domain, 10.5f, Theme.Text, false, 260);
+            dl.AutoSize = false;
+            dl.Size = new Size(260, 30);
+            dl.TextAlign = ContentAlignment.MiddleLeft;
+            r.Controls.Add(dl);
+            r.Controls.Add(new Chip(site.Half ? $"{st.EngagingCostPct}%" : "Full", site.Half ? Theme.Accent : Theme.Danger) { Margin = new Padding(0, 6, 10, 0) });
+            r.Controls.Add(Btn(site.Half ? "Make full price" : $"Make {st.EngagingCostPct}%", () =>
             {
                 var now = Rules.ToggleSiteHalf(site);
                 if (!now) MessageBox.Show("That makes it cheaper, so it kicks in 24 hours from now.", "Unrot");
                 Rebuild();
-            }));
-            r.Controls.Add(Theme.Button("Remove", () =>
+            }, GameButton.Kind.Ghost));
+            r.Controls.Add(Btn("Remove", () =>
             {
                 var now = Rules.RemoveSite(site.Domain);
                 MessageBox.Show(now ? "Removed." : "It'll be unblocked in 24 hours (the PIN skips the wait).", "Unrot");
                 Rebuild();
-            }));
+            }, GameButton.Kind.Ghost));
         }
-        Row().Controls.Add(Theme.Button("Block a site…", () =>
+        s.Controls.Add(Btn("Block a site…", () =>
         {
             var d = Prompt.Ask("Block a site", "Website (e.g. twitch.tv):");
             if (string.IsNullOrWhiteSpace(d)) return;
@@ -224,86 +570,93 @@ public class MainForm : Form
                 "Block a site", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes;
             Rules.AddSite(d, k.Trim(), movie);
             Rebuild();
-        }));
+        }, GameButton.Kind.Secondary, "add"));
 
         // ---- Rules
-        Section("Rules");
-        Add(L(Pin.Unlocked ? "🔓 PIN unlocked: changes apply right away." :
-            "Stricter changes apply now. Looser ones wait 24 hours.", 10, Pin.Unlocked ? Theme.Accent : Theme.Muted));
-        var ratio = Num(st.FocusRatio, 0.1m, 100, 1);
-        var bank = Num(st.MaxBankMin, 5, 1440, 0);
-        var grace = Num(st.GraceSec, 5, 600, 0);
-        var engaging = Num(st.EngagingCostPct, 10, 100, 0);
-        var earlyEnd = Num(st.EarlyEndPct, 0, 100, 0);
-        var prot = new CheckBox { Text = "Protection on", Checked = st.Protection, ForeColor = Theme.Text, AutoSize = true };
-        Labeled("Games & movie sites cost (% of normal)", engaging);
-        Labeled("Pay for ending a lock-in early (% of normal)", earlyEnd);
-        Labeled("Minutes locked in per 1 min of game time", ratio);
-        Labeled("Most game time you can save up (min)", bank);
-        Labeled("Seconds to save before a game closes", grace);
-        Add(prot);
-        Row().Controls.Add(Theme.Button("Save rules", () =>
-        {
-            var delayed = Rules.ProposeSettings((double)ratio.Value, (int)bank.Value, (int)grace.Value, prot.Checked, (int)engaging.Value, (int)earlyEnd.Value);
-            MessageBox.Show(delayed > 0 ? "Saved. Looser changes kick in 24 hours from now." : "Saved.", "Unrot");
-            Rebuild();
-        }, true));
-        var freeRatio = Num(st.FreeRatio, 0.1m, 100, 1);
-        var payback = Num(st.PaybackMult, 1m, 5, 1);
-        var cap = Num(st.DailyCapMin, 15, 1440, 0);
-        var idleMin = Num(st.IdleMin, 0, 120, 0);
-        Labeled("Free lock-in: minutes per 1 min earned", freeRatio);
-        Labeled($"Overtime payback multiplier (overtime is up to {Ledger.OvertimeMin} min)", payback);
-        Labeled("Most doomscrolling per day (min, phone + laptop)", cap);
-        Labeled("Pause a lock-in after this many idle minutes (0 = never)", idleMin);
-        Row().Controls.Add(Theme.Button("Save these", () =>
-        {
-            var delayed = Rules.ProposeExtra((double)freeRatio.Value, (double)payback.Value, (int)cap.Value, (int)idleMin.Value);
-            MessageBox.Show(delayed > 0 ? "Saved. Looser changes kick in 24 hours from now." : "Saved.", "Unrot");
-            Rebuild();
-        }, true));
+        var rc = NewCard("Rules", "tune", Theme.Violet);
+        rc.Controls.Add(L(Pin.Unlocked ? "PIN unlocked: changes apply right away." :
+            "Stricter changes apply now. Looser ones wait 24 hours.", 10, Pin.Unlocked ? Theme.Accent : Theme.Muted, false, rc.Inner));
         foreach (var p in Store.S.Pending.OrderBy(p => p.ApplyAt).ToList())
         {
             var mins = Math.Max(0, (p.ApplyAt - Store.Now) / 60000);
-            var r = Row();
-            r.Controls.Add(L($"⏳ {p.Label} · in {mins / 60}h {mins % 60}m", 10, Theme.Warn));
-            r.Controls.Add(Theme.Button("Cancel", () => { Rules.Cancel(p.Key); Rebuild(); }));
+            var r = Row(rc, rc.Inner);
+            var pl = L($"⏳ {p.Label} · in {mins / 60}h {mins % 60}m", 10, Theme.Warn);
+            pl.Margin = new Padding(0, 8, 10, 0);
+            r.Controls.Add(pl);
+            r.Controls.Add(Btn("Cancel", () => { Rules.Cancel(p.Key); Rebuild(); }, GameButton.Kind.Ghost));
         }
+        var ratio = Num(st.FocusRatio, 0.1m, 100, 1);
+        var freeRatio = Num(st.FreeRatio, 0.1m, 100, 1);
+        var earlyEnd = Num(st.EarlyEndPct, 0, 100, 0);
+        var bank = Num(st.MaxBankMin, 5, 1440, 0);
+        var cap = Num(st.DailyCapMin, 15, 1440, 0);
+        var engaging = Num(st.EngagingCostPct, 10, 100, 0);
+        var grace = Num(st.GraceSec, 5, 600, 0);
+        var payback = Num(st.PaybackMult, 1m, 5, 1);
+        var idleMin = Num(st.IdleMin, 0, 120, 0);
+        var prot = new CheckBox { Text = "Protect Unrot (stopping it needs the PIN)", Checked = st.Protection, ForeColor = Theme.Text, AutoSize = true, Font = Theme.Semi(10), BackColor = Color.Transparent };
+        Header(rc, "Earning");
+        RuleLine(rc, "Minutes locked in per 1 min earned", ratio);
+        RuleLine(rc, "Free lock-in: minutes per 1 min earned", freeRatio);
+        RuleLine(rc, "Pay for ending a lock-in early (%)", earlyEnd);
+        RuleLine(rc, "Pause a lock-in after this many idle minutes (0 = never)", idleMin);
+        Header(rc, "Limits");
+        RuleLine(rc, "Most time you can save up (min)", bank);
+        RuleLine(rc, "Most doomscrolling per day (min, phone + laptop)", cap);
+        RuleLine(rc, "Games & movie sites cost (% of normal)", engaging);
+        Header(rc, "Games");
+        RuleLine(rc, "Seconds to save before a game closes", grace);
+        RuleLine(rc, $"Overtime payback multiplier (overtime is up to {Ledger.OvertimeMin} min)", payback);
+        prot.Margin = new Padding(0, 10, 0, 10);
+        rc.Controls.Add(prot);
+        rc.Controls.Add(Btn("Save rules", () =>
+        {
+            var delayed = Rules.ProposeSettings((double)ratio.Value, (int)bank.Value, (int)grace.Value, prot.Checked, (int)engaging.Value, (int)earlyEnd.Value)
+                + Rules.ProposeExtra((double)freeRatio.Value, (double)payback.Value, (int)cap.Value, (int)idleMin.Value);
+            MessageBox.Show(delayed > 0 ? "Saved. Looser changes kick in 24 hours from now." : "Saved.", "Unrot");
+            Rebuild();
+        }, GameButton.Kind.Primary, "check_circle"));
 
         // ---- PIN
-        Section("Family PIN");
+        var pc = NewCard("Family PIN", "key", Theme.Gold);
         if (!Pin.IsSet)
         {
-            Add(L("Have a family member pick a PIN you don't know. It's needed to stop Unrot or to skip the 24-hour wait.", 10, Theme.Muted));
-            Row().Controls.Add(Theme.Button("Set family PIN", SetPin));
+            pc.Controls.Add(L("Have a family member pick a PIN you don't know. It's needed to stop Unrot or to skip the 24-hour wait.", 10, Theme.Muted, false, pc.Inner));
+            pc.Controls.Add(Btn("Set family PIN", SetPin, GameButton.Kind.Secondary, "key"));
         }
         else if (Pin.Unlocked)
         {
-            Add(L($"🔓 Unlocked for about {(Store.S.AdminUntil - Store.Now) / 60000 + 1} more min.", 10, Theme.Accent));
-            var r = Row();
-            r.Controls.Add(Theme.Button("Change PIN", SetPin));
-            r.Controls.Add(Theme.Button("Lock now", () => { Pin.Lock(); Rebuild(); }));
+            pc.Controls.Add(L($"Unlocked for about {(Store.S.AdminUntil - Store.Now) / 60000 + 1} more min.", 10.5f, Theme.Accent, true, pc.Inner));
+            var r = Row(pc, pc.Inner);
+            r.Controls.Add(Btn("Change PIN", SetPin));
+            r.Controls.Add(Btn("Lock now", () => { Pin.Lock(); Rebuild(); }, GameButton.Kind.Ghost));
         }
         else
         {
-            Row().Controls.Add(Theme.Button("Enter PIN", () =>
+            pc.Controls.Add(L("Locked. Your family member can unlock it for 10 minutes.", 10, Theme.Muted, false, pc.Inner));
+            pc.Controls.Add(Btn("Enter PIN", () =>
             {
                 var pin = Prompt.Ask("Unrot", "Family PIN:", password: true);
                 if (pin == null) return;
                 MessageBox.Show(Pin.Check(pin) ? "Unlocked for 10 minutes." : "Wrong PIN.", "Unrot");
                 Rebuild();
-            }));
+            }, GameButton.Kind.Secondary, "key"));
         }
 
         // ---- Sync
-        Section("Sync with your phone");
-        Add(L("Paste the same Firebase database URL and sync code as on your phone (steps are in the README).", 10, Theme.Muted));
-        var url = new TextBox { Text = Store.S.DbUrl, Width = W - 10, BackColor = Theme.Card2, ForeColor = Theme.Text, BorderStyle = BorderStyle.FixedSingle, PlaceholderText = "https://….firebasedatabase.app" };
-        var code = new TextBox { Text = Store.S.SyncCode, Width = W - 10, BackColor = Theme.Card2, ForeColor = Theme.Text, BorderStyle = BorderStyle.FixedSingle, PlaceholderText = "Sync code" };
-        Labeled("Database URL", url);
-        Labeled("Sync code", code);
-        var sr = Row();
-        sr.Controls.Add(Theme.Button("Save & sync now", async () =>
+        var sc = NewCard("Sync with your phone", "sync", Theme.Blue);
+        sc.Controls.Add(L("Paste the same Firebase database URL and sync code as on your phone (steps are in the README).", 10, Theme.Muted, false, sc.Inner));
+        TextBox Box(string text, string placeholder) => new()
+        {
+            Text = text, Width = sc.Inner, BackColor = Theme.Card2, ForeColor = Theme.Text, BorderStyle = BorderStyle.FixedSingle,
+            PlaceholderText = placeholder, Font = Theme.Semi(10.5f), Margin = new Padding(0, 0, 0, 10),
+        };
+        var url = Box(Store.S.DbUrl, "https://….firebasedatabase.app");
+        var code = Box(Store.S.SyncCode, "Sync code");
+        sc.Controls.Add(url);
+        sc.Controls.Add(code);
+        var sr = Row(sc, sc.Inner);
+        sr.Controls.Add(Btn("Save & sync now", async () =>
         {
             Store.S.DbUrl = url.Text.Trim();
             Store.S.SyncCode = code.Text.Trim();
@@ -311,53 +664,17 @@ public class MainForm : Form
             var ok = await Sync.RunAsync();
             MessageBox.Show(ok ? "Synced ✓" : "Sync failed: " + Store.S.LastSyncError, "Unrot");
             Rebuild();
-        }, true));
-        sr.Controls.Add(Theme.Button("New code", () =>
-        {
-            code.Text = Sync.NewCode();
-        }));
+        }, GameButton.Kind.Primary, "sync"));
+        sr.Controls.Add(Btn("New code", () => { code.Text = Sync.NewCode(); }));
         var status = !Sync.Configured ? "Not set up" :
-            Store.S.LastSyncError.Length > 0 ? "⚠️ Last sync failed: " + Store.S.LastSyncError :
+            Store.S.LastSyncError.Length > 0 ? "Last sync failed: " + Store.S.LastSyncError :
             Store.S.LastSyncTs == 0 ? "Not synced yet" :
             "Last synced " + DateTimeOffset.FromUnixTimeMilliseconds(Store.S.LastSyncTs).ToLocalTime().ToString("h:mm:ss tt", CultureInfo.CurrentCulture);
-        Add(L(status, 9, Theme.Muted));
+        sc.Controls.Add(L(status, 9, Store.S.LastSyncError.Length > 0 ? Theme.Warn : Theme.Muted, false, sc.Inner));
         foreach (var d in Ledger.Remotes())
-            Add(L($"• {d.Name}: earned {Ledger.FmtShort(d.Earned)}, spent {Ledger.FmtShort(d.Spent)}", 9, Theme.Muted));
+            sc.Controls.Add(L($"• {d.Name}: earned {Ledger.FmtShort(d.Earned)}, spent {Ledger.FmtShort(d.Spent)}", 9, Theme.Muted, false, sc.Inner));
 
-        // ---- Log
-        if (Store.S.Log.Count > 0)
-        {
-            Section("Recent");
-            foreach (var l in Store.S.Log.Take(10))
-            {
-                var when = DateTimeOffset.FromUnixTimeMilliseconds(l.Ts).ToLocalTime().ToString("ddd h:mm tt", CultureInfo.CurrentCulture);
-                Add(L($"{l.Text}   ·   {when}", 9, Theme.Muted));
-            }
-        }
-
-        Add(L($"Data: {Store.Dir}", 8, Theme.Muted));
-        _panel.ResumeLayout();
-    }
-
-    NumericUpDown Num(double value, decimal min, decimal max, int decimals) => new()
-    {
-        Minimum = min,
-        Maximum = max,
-        DecimalPlaces = decimals,
-        Increment = decimals > 0 ? 0.5m : 1,
-        Value = Math.Clamp((decimal)value, min, max),
-        Width = 120,
-        BackColor = Theme.Card2,
-        ForeColor = Theme.Text,
-    };
-
-    void Labeled(string label, Control c)
-    {
-        var l = L(label, 9, Theme.Muted);
-        l.Margin = new Padding(0, 4, 0, 2);
-        Add(l);
-        c.Margin = new Padding(0, 0, 0, 8);
-        Add(c);
+        Add(L($"Data: {Store.Dir}", 8, Theme.Muted, false, CW));
     }
 
     void SetPin()
@@ -377,5 +694,87 @@ public class MainForm : Form
     {
         base.OnShown(e);
         Rebuild();
+    }
+}
+
+/// <summary>An icon in a soft tinted circle.</summary>
+public class IconBadge : Control
+{
+    readonly string _icon;
+    readonly Color _color;
+
+    public IconBadge(string icon, Color color, int size)
+    {
+        _icon = icon;
+        _color = color;
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer |
+                 ControlStyles.SupportsTransparentBackColor, true);
+        BackColor = Color.Transparent;
+        Size = new Size(size, size);
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        using var b = new SolidBrush(Theme.Tint(_color, Theme.Card, 0.2f));
+        e.Graphics.FillEllipse(b, 0, 0, Width - 1, Height - 1);
+        var s = Width / 2;
+        e.Graphics.DrawImage(Theme.Icon(_icon, _color, s), (Width - s) / 2, (Height - s) / 2, s, s);
+    }
+}
+
+/// <summary>A small rounded label, e.g. "+10 min".</summary>
+public class Chip : Control
+{
+    readonly Color _color;
+
+    public Chip(string text, Color color)
+    {
+        _color = color;
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer |
+                 ControlStyles.SupportsTransparentBackColor, true);
+        BackColor = Color.Transparent;
+        Font = Theme.Heavy(9);
+        Text = text;
+        TextChanged += (_, _) => Fit();
+        Fit();
+    }
+
+    void Fit()
+    {
+        var sz = TextRenderer.MeasureText(Text ?? "", Font);
+        Size = new Size(sz.Width + 20, sz.Height + 8);
+        Invalidate();
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        using var p = Theme.Rounded(new RectangleF(0, 0, Width - 1, Height - 1), Height / 2f);
+        using var b = new SolidBrush(Theme.Tint(_color, Theme.Card, 0.18f));
+        e.Graphics.FillPath(b, p);
+        var sz = TextRenderer.MeasureText(Text, Font);
+        TextRenderer.DrawText(e.Graphics, Text, Font, new Point((Width - sz.Width) / 2, (Height - sz.Height) / 2), _color, TextFormatFlags.NoPadding);
+    }
+}
+
+/// <summary>A small colored dot (activity list).</summary>
+public class Dot : Control
+{
+    readonly Color _color;
+
+    public Dot(Color color)
+    {
+        _color = color;
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.SupportsTransparentBackColor, true);
+        BackColor = Color.Transparent;
+        Size = new Size(8, 8);
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        using var b = new SolidBrush(_color);
+        e.Graphics.FillEllipse(b, 0, 0, 7, 7);
     }
 }
