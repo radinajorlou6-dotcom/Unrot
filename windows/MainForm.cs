@@ -25,7 +25,7 @@ public class MainForm : Form
         Text = "Unrot";
         Icon = Theme.MakeIcon();
         Size = new Size(1000, 760);
-        MinimumSize = new Size(900, 560);
+        MinimumSize = new Size(980, 560);
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = Theme.Bg;
         ForeColor = Theme.Text;
@@ -371,10 +371,10 @@ public class MainForm : Form
         c.Controls.Add(L("Games and blocked sites are off until the timer ends. Study, work, anything real.", 10, Theme.Muted, false, c.Inner));
         var tiles = Row(c, c.Inner);
         tiles.Margin = new Padding(0, 6, 0, 4);
-        var tw = (c.Inner - 30) / 4;
+        var tw = (c.Inner - 44) / 4;
         foreach (var m in new[] { 25, 45, 60, 90 })
         {
-            tiles.Controls.Add(Btn($"{m} min · +{Ledger.FmtShort((long)(m * 60 / st.FocusRatio))}",
+            tiles.Controls.Add(Btn($"{m} min · +{(int)Math.Round(m / st.FocusRatio)}m",
                 () => { _app.StartFocus(m); Rebuild(); }, m == 25 ? GameButton.Kind.Primary : GameButton.Kind.Secondary, null, tw));
         }
         c.Controls.Add(Btn($"Free lock-in · stop anytime · {Ledger.FmtRatio(st.FreeRatio)}:1", () => { _app.StartFree(); Rebuild(); },
@@ -391,7 +391,7 @@ public class MainForm : Form
         LockInCard(st);
 
         var c = NewCard("Quests on your phone", "bolt", Theme.Gold);
-        c.Controls.Add(L("These are tracked by the Unrot phone app. With sync on, the time shows up here too.", 10, Theme.Muted, false, c.Inner));
+        c.Controls.Add(L("Tracked by the Unrot phone app; with sync on, the time shows up here too. These are the default rewards; your phone's Earn tab shows your current ones.", 10, Theme.Muted, false, c.Inner));
         void Quest(string icon, Color color, string name, string desc, string reward)
         {
             var r = Row(c, c.Inner);
