@@ -335,7 +335,7 @@ public class MainForm : Form
             {
                 _focusPay = new Chip($"+{Ledger.FmtShort(Ledger.FreePayout)} so far", Theme.Accent) { Margin = new Padding(0, 10, 0, 10) };
                 col.Controls.Add(_focusPay);
-                col.Controls.Add(L($"Free lock-in at {Ledger.FmtRatio(st.FreeRatio)}:1. Stop whenever; you're paid for every minute. {st.IdleMin} min without touching the mouse or keyboard pauses it.", 10, Theme.Muted, false, c.Inner - 200));
+                col.Controls.Add(L($"Free lock-in at {Ledger.FmtRatio(st.FreeRatio)}:1. Stop whenever; you're paid for every minute.", 10, Theme.Muted, false, c.Inner - 200));
                 col.Controls.Add(Btn("Stop & collect", () =>
                 {
                     var got = Ledger.StopFree();
@@ -379,7 +379,7 @@ public class MainForm : Form
         }
         c.Controls.Add(Btn($"Free lock-in · stop anytime · {Ledger.FmtRatio(st.FreeRatio)}:1", () => { _app.StartFree(); Rebuild(); },
             GameButton.Kind.Success, "play_arrow", c.Inner));
-        c.Controls.Add(L($"End a timed one early for {st.EarlyEndPct}% pay. Lock-ins pause after {st.IdleMin} min without mouse or keyboard. Keep your phone screen off for a bonus.", 9, Theme.Muted, false, c.Inner));
+        c.Controls.Add(L($"End a timed one early for {st.EarlyEndPct}% pay. Keep your phone screen off for a bonus.", 9, Theme.Muted, false, c.Inner));
     }
 
     // ---------------------------------------------------------------- EARN
@@ -593,13 +593,11 @@ public class MainForm : Form
         var engaging = Num(st.EngagingCostPct, 10, 100, 0);
         var grace = Num(st.GraceSec, 5, 600, 0);
         var payback = Num(st.PaybackMult, 1m, 5, 1);
-        var idleMin = Num(st.IdleMin, 0, 120, 0);
         var prot = new CheckBox { Text = "Protect Unrot (stopping it needs the PIN)", Checked = st.Protection, ForeColor = Theme.Text, AutoSize = true, Font = Theme.Semi(10), BackColor = Color.Transparent };
         Header(rc, "Earning");
         RuleLine(rc, "Minutes locked in per 1 min earned", ratio);
         RuleLine(rc, "Free lock-in: minutes per 1 min earned", freeRatio);
         RuleLine(rc, "Pay for ending a lock-in early (%)", earlyEnd);
-        RuleLine(rc, "Pause a lock-in after this many idle minutes (0 = never)", idleMin);
         Header(rc, "Limits");
         RuleLine(rc, "Most time you can save up (min)", bank);
         RuleLine(rc, "Most doomscrolling per day (min, phone + laptop)", cap);
@@ -612,7 +610,7 @@ public class MainForm : Form
         rc.Controls.Add(Btn("Save rules", () =>
         {
             var delayed = Rules.ProposeSettings((double)ratio.Value, (int)bank.Value, (int)grace.Value, prot.Checked, (int)engaging.Value, (int)earlyEnd.Value)
-                + Rules.ProposeExtra((double)freeRatio.Value, (double)payback.Value, (int)cap.Value, (int)idleMin.Value);
+                + Rules.ProposeExtra((double)freeRatio.Value, (double)payback.Value, (int)cap.Value);
             MessageBox.Show(delayed > 0 ? "Saved. Looser changes kick in 24 hours from now." : "Saved.", "Unrot");
             Rebuild();
         }, GameButton.Kind.Primary, "check_circle"));

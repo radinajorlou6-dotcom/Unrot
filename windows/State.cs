@@ -22,8 +22,6 @@ public class Settings
     public double PaybackMult { get; set; } = 1;
     /// <summary>Most doomscrolling (social sites here + full-price apps on the phone) per day.</summary>
     public int DailyCapMin { get; set; } = 120;
-    /// <summary>A lock-in pauses after this many minutes with no mouse/keyboard (0 = never).</summary>
-    public int IdleMin { get; set; } = 10;
     public List<BlockedSite> Sites { get; set; } = BlockedSite.Defaults();
 }
 
@@ -100,6 +98,7 @@ public class AppState
     public string LastSyncError { get; set; } = "";
     public bool Welcomed { get; set; }
     public bool MovieSitesAdded { get; set; }
+    public bool IdleRefundDone { get; set; }
     public bool FocusFree { get; set; }
     public long FocusStart { get; set; }
     public string DoomDay { get; set; } = "";

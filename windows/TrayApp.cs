@@ -17,7 +17,6 @@ public class TrayApp : ApplicationContext
     bool _syncing;
     double _spendAcc;
     long _lastPositivePlaying, _lastGameSeen;
-    bool _idlePaused;
     PillForm _pill;
     readonly HashSet<int> _warned = new();
     string _lastGame;
@@ -26,6 +25,7 @@ public class TrayApp : ApplicationContext
     public TrayApp(bool showWindow = true)
     {
         Store.Load();
+        Ledger.RefundIdlePausesOnce();
         try { File.Delete(Program.InstalledExe + ".old"); } catch { }
         _showEvent = new EventWaitHandle(false, EventResetMode.AutoReset, Program.ShowEventName);
         _updateEvent = new EventWaitHandle(false, EventResetMode.AutoReset, Program.UpdateEventName);
@@ -134,7 +134,6 @@ public class TrayApp : ApplicationContext
 
         var st = Rules.Current();
         Ledger.Rollover();
-        CheckIdle(st);
 
         Games.RefreshIndexIfStale();
         var fg = Games.ForegroundGame();
@@ -228,32 +227,6 @@ public class TrayApp : ApplicationContext
             : (Theme.Gold, Theme.Card);
         var half = game || site.Value.Site.Half;
         _pill.ShowOn(hwnd, "⏳ " + Ledger.Fmt(Math.Max(0, avail)) + (half ? $" · {st.EngagingCostPct}%" : ""), fgc, bgc);
-    }
-
-    /// <summary>During a lock-in, 10+ minutes without touching the mouse or keyboard pauses it.</summary>
-    void CheckIdle(Settings st)
-    {
-        if (!Ledger.LocalFocus || st.IdleMin <= 0)
-        {
-            _idlePaused = false;
-            return;
-        }
-        var idle = Idle.Ms();
-        if (idle >= st.IdleMin * 60_000L)
-        {
-            if (!_idlePaused)
-            {
-                _idlePaused = true;
-                Ledger.ShiftFocus(idle);
-                Store.AddLog($"Lock-in paused: no activity for {st.IdleMin} min");
-            }
-            else Ledger.ShiftFocus(1000);
-        }
-        else if (_idlePaused)
-        {
-            _idlePaused = false;
-            Store.AddLog("Lock-in resumed");
-        }
     }
 
     void Enforce(bool gameInFront, (IntPtr Hwnd, BlockedSite Site)? site)
@@ -468,22 +441,5 @@ public static class Prompt
         f.AcceptButton = ok;
         f.CancelButton = cancel;
         return f.ShowDialog() == DialogResult.OK ? box.Text : null;
-    }
-}
-
-/// <summary>How long since the last mouse/keyboard input.</summary>
-public static class Idle
-{
-    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
-    struct LASTINPUTINFO { public uint cbSize; public uint dwTime; }
-
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    static extern bool GetLastInputInfo(ref LASTINPUTINFO info);
-
-    public static long Ms()
-    {
-        var li = new LASTINPUTINFO { cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<LASTINPUTINFO>() };
-        if (!GetLastInputInfo(ref li)) return 0;
-        return unchecked((uint)Environment.TickCount - li.dwTime);
     }
 }

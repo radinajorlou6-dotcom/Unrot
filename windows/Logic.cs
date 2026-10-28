@@ -165,12 +165,59 @@ public static class Ledger
         Store.S.FocusFree = false;
     }
 
-    /// <summary>Idle time doesn't count: pushes the lock-in back by [ms].</summary>
-    public static void ShiftFocus(long ms)
+    /// <summary>
+    /// The old idle check pushed lock-ins back whenever the mouse and keyboard sat still (e.g. working on paper).
+    /// Runs once: puts a running lock-in back on its real schedule, and pays back free lock-ins it shortchanged.
+    /// Rebuilt from the activity log ("Locked in…", "Lock-in paused: no activity for N min", "Lock-in resumed").
+    /// </summary>
+    public static void RefundIdlePausesOnce()
     {
-        if (Store.S.FocusUntil == 0) return;
-        Store.S.FocusUntil += ms;
-        if (Store.S.FocusFree) Store.S.FocusStart += ms;
+        if (Store.S.IdleRefundDone) return;
+        Store.S.IdleRefundDone = true;
+        try
+        {
+            var log = Store.S.Log.OrderBy(l => l.Ts).ToList();
+            bool inFree = false;
+            long pausedAt = 0, idleMs = 0, lost = 0, lastStart = 0;
+            var startRe = new System.Text.RegularExpressions.Regex(@"^Locked in for (\d+) min$");
+            var pauseRe = new System.Text.RegularExpressions.Regex(@"^Lock-in paused: no activity for (\d+) min$");
+            int lastMinutes = 0;
+            void EndPause(long at)
+            {
+                if (pausedAt == 0) return;
+                if (inFree) lost += Math.Max(0, at - pausedAt) + idleMs;
+                pausedAt = 0;
+            }
+            foreach (var l in log)
+            {
+                var t = l.Text ?? "";
+                var ms = startRe.Match(t);
+                var mp = pauseRe.Match(t);
+                if (t == "Started a free lock-in") { inFree = true; lastStart = l.Ts; lastMinutes = 0; pausedAt = 0; }
+                else if (ms.Success) { inFree = false; lastStart = l.Ts; lastMinutes = int.Parse(ms.Groups[1].Value); pausedAt = 0; }
+                else if (mp.Success) { pausedAt = l.Ts; idleMs = long.Parse(mp.Groups[1].Value) * 60_000; }
+                else if (t == "Lock-in resumed") EndPause(l.Ts);
+                else if (inFree && (t.Contains("free lock-in") || t == "Ended a free lock-in")) { EndPause(l.Ts); inFree = false; }
+            }
+            // A lock-in that's still running: put it back on its real schedule.
+            if (LocalFocus && lastStart > 0)
+            {
+                if (Store.S.FocusFree && inFree)
+                {
+                    Store.S.FocusStart = lastStart;
+                    Store.S.FocusUntil = lastStart + FreeMaxMs;
+                    lost = 0;
+                }
+                else if (!Store.S.FocusFree && lastMinutes > 0)
+                {
+                    Store.S.FocusUntil = Math.Max(Store.Now + 1000, lastStart + lastMinutes * 60_000L);
+                }
+            }
+            var pay = (long)(lost / 1000 / Rules.Current().FreeRatio);
+            if (pay > 0) Credit(pay, "refund for lock-in time the idle check didn't count");
+            Store.Save();
+        }
+        catch { }
     }
 
     public static bool LocalFocus => Store.S.FocusUntil > Store.Now;
@@ -277,7 +324,6 @@ public static class Rules
             case "freeRatio": s.FreeRatio = double.Parse(v, CultureInfo.InvariantCulture); break;
             case "paybackMult": s.PaybackMult = double.Parse(v, CultureInfo.InvariantCulture); break;
             case "dailyCapMin": s.DailyCapMin = int.Parse(v); break;
-            case "idleMin": s.IdleMin = int.Parse(v); break;
             default:
                 if (key.StartsWith("ignore:")) Store.S.IgnoredGames.Add(key["ignore:".Length..]);
                 else if (key.StartsWith("unextra:")) Store.S.ExtraGames.RemoveAll(g => Same(g, key["unextra:".Length..]));
@@ -342,7 +388,7 @@ public static class Rules
         Change("ignore:" + path, "1", true, "Not a game: " + Path.GetFileName(path));
 
     /// <summary>The newer rules. Same deal: stricter now, looser in 24h.</summary>
-    public static int ProposeExtra(double freeRatio, double paybackMult, int dailyCapMin, int idleMin)
+    public static int ProposeExtra(double freeRatio, double paybackMult, int dailyCapMin)
     {
         var old = Current();
         int delayed = 0;
@@ -352,9 +398,6 @@ public static class Rules
                 paybackMult < old.PaybackMult, $"Overtime payback → {paybackMult.ToString("0.##", CultureInfo.InvariantCulture)}×")) delayed++;
         if (dailyCapMin != old.DailyCapMin && !Change("dailyCapMin", dailyCapMin.ToString(),
                 dailyCapMin > old.DailyCapMin, $"Daily doomscroll limit → {dailyCapMin} min")) delayed++;
-        var idleLooser = idleMin == 0 ? old.IdleMin != 0 : old.IdleMin != 0 && idleMin > old.IdleMin;
-        if (idleMin != old.IdleMin && !Change("idleMin", idleMin.ToString(),
-                idleLooser, idleMin == 0 ? "Idle check → off" : $"Idle check → {idleMin} min")) delayed++;
         return delayed;
     }
 
