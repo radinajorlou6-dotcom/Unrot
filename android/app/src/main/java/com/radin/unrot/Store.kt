@@ -125,6 +125,53 @@ class Store private constructor(ctx: Context) {
         get() = str("lastCrash")
         set(v) = p.edit().putString("lastCrash", v).commit().let { }
 
+    // ---- Free-form lock-in ----
+    var focusFree: Boolean
+        get() = p.getBoolean("focusFree", false)
+        set(v) = p.edit().putBoolean("focusFree", v).apply()
+    var focusStart: Long
+        get() = long("focusStart")
+        set(v) = putLong("focusStart", v)
+
+    // ---- Doomscrolling today (full-price apps/sites), for the daily cap and streaks ----
+    var doomDay: String
+        get() = str("doomDay")
+        set(v) = putStr("doomDay", v)
+    var doomSec: Long
+        get() = long("doomSec")
+        set(v) = putLong("doomSec", v)
+    var doomPrevDay: String
+        get() = str("doomPrevDay")
+        set(v) = putStr("doomPrevDay", v)
+    var doomPrevSec: Long
+        get() = long("doomPrevSec")
+        set(v) = putLong("doomPrevSec", v)
+    var streak: Int
+        get() = p.getInt("streak", 0)
+        set(v) = p.edit().putInt("streak", v).apply()
+
+    // ---- Phone-down tracking for the current lock-in ----
+    var pdStart: Long
+        get() = long("pdStart")
+        set(v) = putLong("pdStart", v)
+    var pdScreenSec: Long
+        get() = long("pdScreenSec")
+        set(v) = putLong("pdScreenSec", v)
+    var pdLocal: Boolean
+        get() = p.getBoolean("pdLocal", false)
+        set(v) = p.edit().putBoolean("pdLocal", v).apply()
+    var pdFree: Boolean
+        get() = p.getBoolean("pdFree", false)
+        set(v) = p.edit().putBoolean("pdFree", v).apply()
+    /** What the last local lock-in paid (for the phone-down bonus). */
+    var lastFocusPaid: Long
+        get() = long("lastFocusPaid")
+        set(v) = putLong("lastFocusPaid", v)
+
+    var recapWeek: String
+        get() = str("recapWeek")
+        set(v) = putStr("recapWeek", v)
+
     var onboarded: Boolean
         get() = p.getBoolean("onboarded", false)
         set(v) = p.edit().putBoolean("onboarded", v).apply()

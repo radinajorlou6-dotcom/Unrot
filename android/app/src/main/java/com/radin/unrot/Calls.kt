@@ -53,6 +53,7 @@ object Calls {
                 if (durSec >= 30) s.log("$how call with ${who.name} was ${durSec / 60} min. Needs ${minSec / 60}+ to earn time")
                 return 0
             }
+            Ledger.countStat("c")
             val cooldownMs = st.n("callCooldownH") * 3_600_000L
             val paid = s.obj("callPaid")
             if (date - paid.optLong(who.key, 0L) < cooldownMs) {

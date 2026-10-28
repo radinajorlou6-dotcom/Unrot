@@ -263,12 +263,14 @@ class UnrotService : AccessibilityService() {
         val now = System.currentTimeMillis()
         val st = Rules.current(s)
         Ledger.ensureDailyBase(s, st)
+        Ledger.rollover(s, st)
 
         val earned = Ledger.settleFocus(s, st)
         if (earned >= 0) {
             Notif.alert(this, "Lock-in complete 🎉", "+${Ledger.fmtShort(earned)} of scroll time")
             syncSoon()
         }
+        trackPhoneDown(st)
 
         // Re-check which app is really in front every 2s (some apps don't send events on resume).
         if (ticks % 2 == 0L) {
@@ -285,7 +287,9 @@ class UnrotService : AccessibilityService() {
 
         if (usingFlagged) {
             // Games and movies cost less than doomscrolling.
-            spendAcc += if (key!! in st.halfRate) st.n("engagingCostPct") / 100.0 else 1.0
+            val half = key!! in st.halfRate
+            spendAcc += if (half) st.n("engagingCostPct") / 100.0 else 1.0
+            if (half) Ledger.addAppTime(key, 1) else Ledger.addDoom(s, 1, key)
             val whole = spendAcc.toLong()
             if (whole > 0) {
                 Ledger.spend(s, whole)
@@ -302,10 +306,10 @@ class UnrotService : AccessibilityService() {
                 checkInAck = false
                 nextCheckInAt = continuousSec + (if (st.checkInMin > 0) st.checkInMin * 60L else Long.MAX_VALUE / 2)
             }
-            val bal = Ledger.balanceSec(s)
+            val bal = Ledger.availableSec(s, st, key)
             if (bal in 1..60 && !warnedLow) {
                 warnedLow = true
-                Notif.alert(this, "1 minute of scroll time left", "Wrap it up, or lock in to earn more.")
+                Notif.alert(this, "1 minute left", "Wrap it up, or lock in to earn more.")
             }
             if (bal > 120) warnedLow = false
             updatePill(st, key)
@@ -320,12 +324,60 @@ class UnrotService : AccessibilityService() {
                     .notify(Notif.ID_STATUS, Notif.status(this, statusText()))
             }
         }
-        if (ticks % 30 == 0L) syncSoon()
+        if (ticks % 30 == 0L) {
+            syncSoon()
+            Ledger.flushStats(s)
+            weeklyRecapNotice()
+        }
         if (ticks % 60 == 30L) background { Calls.sync(this) }
         if (ticks % 900 == 0L) background {
             Calls.sync(this)
             HealthSync.sync(this)
         }
+    }
+
+    /**
+     * Phone-down bonus: if the screen stayed off (1 min grace) for a whole lock-in of 10+ min,
+     * on this phone or the laptop, you get a bonus on top of what it paid.
+     */
+    private fun trackPhoneDown(st: Settings) {
+        val now = System.currentTimeMillis()
+        if (Ledger.focusActive(s)) {
+            if (s.pdStart == 0L) {
+                s.pdStart = now
+                s.pdScreenSec = 0
+                s.pdLocal = Ledger.localFocusActive(s)
+                s.pdFree = if (s.pdLocal) s.focusFree else Ledger.remoteFocusFree(s)
+                s.lastFocusPaid = 0
+            }
+            if (getSystemService(PowerManager::class.java).isInteractive) s.pdScreenSec = s.pdScreenSec + 1
+            return
+        }
+        if (s.pdStart == 0L) return
+        val dur = (now - s.pdStart) / 1000
+        val pct = st.n("phoneDownPct")
+        if (dur >= 10 * 60 && pct > 0) {
+            if (s.pdScreenSec <= 60) {
+                val base = if (s.pdLocal) s.lastFocusPaid
+                else (dur / (if (s.pdFree) st.freeRatio else st.focusRatio)).toLong()
+                val bonus = base * pct / 100
+                if (bonus > 0) Ledger.credit(s, st, bonus, "phone-down bonus (+$pct%, screen stayed off)")
+            } else {
+                s.log("No phone-down bonus: screen was on for ${s.pdScreenSec / 60} min during the lock-in")
+            }
+        }
+        s.pdStart = 0
+    }
+
+    /** Sunday evening: a nudge to look at your week. */
+    private fun weeklyRecapNotice() {
+        val now = java.time.LocalDateTime.now()
+        if (now.dayOfWeek != java.time.DayOfWeek.SUNDAY || now.hour < 19) return
+        val week = now.toLocalDate().toString()
+        if (s.recapWeek == week) return
+        s.recapWeek = week
+        val r = Recap.week(this, s)
+        Notif.alert(this, "Your week in Unrot", r.headline)
     }
 
     private fun syncSoon() {
@@ -353,6 +405,7 @@ class UnrotService : AccessibilityService() {
         val mode = when {
             Ledger.focusActive(s) -> BlockActivity.MODE_FOCUS
             Ledger.balanceSec(s) <= 0 -> BlockActivity.MODE_OUT
+            pkg !in st.halfRate && Ledger.doomToday(s) >= st.n("dailyCapMin") * 60L -> BlockActivity.MODE_CAP
             st.inBedtime(LocalTime.now().let { it.hour * 60 + it.minute }) &&
                 (nightPass[pkg] ?: 0L) < now -> BlockActivity.MODE_NIGHT
             introPending == pkg -> BlockActivity.MODE_INTRO
@@ -386,7 +439,7 @@ class UnrotService : AccessibilityService() {
 
     /** A small always-on countdown over blocked apps. Drag it anywhere; it can't be hidden. */
     private fun updatePill(st: Settings, key: String) {
-        val bal = Ledger.balanceSec(s)
+        val bal = Ledger.availableSec(s, st, key)
         val v = pill ?: createPill() ?: return
         val half = key in st.halfRate
         v.text = "⏳ " + Ledger.fmt(maxOf(0L, bal)) + if (half) " · ${st.n("engagingCostPct")}%" else ""

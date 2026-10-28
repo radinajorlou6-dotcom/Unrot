@@ -10,6 +10,8 @@ import org.json.JSONObject
 data class Settings(
     val workoutRatio: Double = 3.0,
     val focusRatio: Double = 3.0,
+    /** Free-form lock-in (stop whenever): minutes per 1 minute earned. */
+    val freeRatio: Double = 5.0,
     val callRatio: Double = 3.0,
     val dailyBaseMin: Int = 10,
     val maxBankMin: Int = 180,
@@ -42,6 +44,7 @@ data class Settings(
     fun toJson(): JSONObject = JSONObject()
         .put("workoutRatio", workoutRatio)
         .put("focusRatio", focusRatio)
+        .put("freeRatio", freeRatio)
         .put("callRatio", callRatio)
         .put("dailyBaseMin", dailyBaseMin)
         .put("maxBankMin", maxBankMin)
@@ -100,6 +103,7 @@ data class Settings(
             return Settings(
                 workoutRatio = o.optDouble("workoutRatio", d.workoutRatio),
                 focusRatio = o.optDouble("focusRatio", d.focusRatio),
+                freeRatio = o.optDouble("freeRatio", d.freeRatio),
                 callRatio = o.optDouble("callRatio", d.callRatio),
                 dailyBaseMin = o.optInt("dailyBaseMin", d.dailyBaseMin),
                 maxBankMin = o.optInt("maxBankMin", d.maxBankMin),
@@ -165,6 +169,7 @@ object Rules {
     private fun applyKey(st: Settings, key: String, v: String): Settings = when {
         key == "workoutRatio" -> st.copy(workoutRatio = v.toDouble())
         key == "focusRatio" -> st.copy(focusRatio = v.toDouble())
+        key == "freeRatio" -> st.copy(freeRatio = v.toDouble())
         key == "callRatio" -> st.copy(callRatio = v.toDouble())
         key == "dailyBaseMin" -> st.copy(dailyBaseMin = v.toInt())
         key == "maxBankMin" -> st.copy(maxBankMin = v.toInt())
@@ -216,6 +221,8 @@ object Rules {
             new.workoutRatio < old.workoutRatio, "Workout ratio → ${fmtRatio(new.workoutRatio)}:1")
         handle("focusRatio", old.focusRatio.toString(), new.focusRatio.toString(),
             new.focusRatio < old.focusRatio, "Lock-in ratio → ${fmtRatio(new.focusRatio)}:1")
+        handle("freeRatio", old.freeRatio.toString(), new.freeRatio.toString(),
+            new.freeRatio < old.freeRatio, "Free lock-in ratio → ${fmtRatio(new.freeRatio)}:1")
         for (r in NumRules.all) {
             val o = old.n(r.key)
             val v = new.n(r.key)
@@ -306,6 +313,12 @@ data class NumRule(
 
 object NumRules {
     val all = listOf(
+        NumRule("dailyCapMin", "Most doomscrolling per day (phone apps + social sites)", 120, 15, 1440, true, "min"),
+        NumRule("streakTargetMin", "Streak: stay under this much doomscrolling a day", 60, 5, 600, true, "min"),
+        NumRule("streak3Min", "Streak bonus at 3 days", 10, 0, 240, true, "min"),
+        NumRule("streak7Min", "Streak bonus at 7 days", 30, 0, 240, true, "min"),
+        NumRule("streak30Min", "Streak bonus at 30 days (and every 30 after)", 60, 0, 600, true, "min"),
+        NumRule("phoneDownPct", "Phone-down bonus (screen off all lock-in)", 20, 0, 100, true, "%"),
         NumRule("engagingCostPct", "Games & movies cost (% of normal)", 50, 10, 100, false, "%"),
         NumRule("earlyEndPct", "Pay for ending a lock-in early (% of normal)", 50, 0, 100, true, "%"),
         NumRule("introWaitSec", "Wait before \"Continue\" on the opening card", 15, 0, 300, false, "s"),

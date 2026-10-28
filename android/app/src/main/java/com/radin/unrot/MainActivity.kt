@@ -32,6 +32,7 @@ class MainActivity : Activity() {
     private lateinit var s: Store
     private var balanceView: TextView? = null
     private var focusClock: TextView? = null
+    private var focusPay: TextView? = null
     private var focusWasActive = false
     private var hcAvailable = false
     private var hcGranted = false
@@ -101,7 +102,14 @@ class MainActivity : Activity() {
         override fun run() {
             balanceView?.text = balanceText()
             val active = Ledger.focusActive(s)
-            if (active) focusClock?.text = Ledger.fmt(Ledger.focusRemainingSec(s))
+            if (active) {
+                if (s.focusFree && Ledger.localFocusActive(s)) {
+                    focusClock?.text = Ledger.fmt(Ledger.freeElapsedSec(s))
+                    focusPay?.text = "So far: +${Ledger.fmtShort(Ledger.freePayout(s, Rules.current(s)))}"
+                } else {
+                    focusClock?.text = Ledger.fmt(Ledger.focusRemainingSec(s))
+                }
+            }
             if (active != focusWasActive) {
                 // A lock-in just ended (or started elsewhere): redraw so the card updates.
                 Ledger.settleFocus(s, Rules.current(s))
@@ -113,7 +121,11 @@ class MainActivity : Activity() {
 
     private fun balanceText(): String {
         val b = Ledger.balanceSec(s)
-        return if (b > 0) Ledger.fmt(b) else "0:00"
+        return when {
+            b > 0 -> Ledger.fmt(b)
+            b < 0 -> "-" + Ledger.fmt(-b)
+            else -> "0:00"
+        }
     }
 
     /** Pulls in new workouts, family calls and laptop totals, then redraws. */
@@ -158,6 +170,7 @@ class MainActivity : Activity() {
             setupCard(root)
             tomorrowCard(root)
             earnCard(root, st)
+            recapCard(root)
             activityCard(root)
             appsCard(root, st)
             sitesCard(root, st)
@@ -183,12 +196,26 @@ class MainActivity : Activity() {
         val bal = text(balanceText(), 64f, Col.ACCENT, bold = true)
         balanceView = bal
         root.add(bal, 0)
+        val st = Rules.current(s)
         val sub = when {
-            Ledger.focusActive(s) -> "🔒 Locked in · ${Ledger.fmt(Ledger.focusRemainingSec(s))} left"
-            Ledger.balanceSec(s) <= 0 -> "Out of scroll time. Lock in to earn more."
+            Ledger.focusActive(s) -> "🔒 Locked in right now"
+            Ledger.balanceSec(s) < 0 -> "You owe ${Ledger.fmtShort(-Ledger.balanceSec(s))} from laptop overtime. What you earn next pays it back."
+            Ledger.balanceSec(s) == 0L -> "Out of scroll time. Lock in to earn more."
             else -> "of scroll time available"
         }
         root.add(text(sub, 16f, Col.MUTED), 4)
+        val doom = Ledger.doomToday(s)
+        val cap = st.n("dailyCapMin") * 60L
+        val streak = s.streak
+        root.add(
+            text(
+                "📱 Doomscrolled today: ${Recap.hm(doom)} of ${Recap.hm(cap)}" +
+                    (if (doom >= cap) " (done for today)" else "") +
+                    "\n" + (if (streak > 0) "🔥 $streak-day streak · " else "🔥 No streak yet · ") +
+                    "stay under ${Recap.hm(st.n("streakTargetMin") * 60L)} today to keep it going",
+                14f, if (doom >= cap) Col.WARN else Col.MUTED,
+            ), 4,
+        )
         if (!UnrotService.running && Setup.accessibilityOn(this@MainActivity)) {
             root.add(text("⚠️ The blocker isn't running right now. Turn Unrot off and on again in Accessibility settings.", 14f, Col.WARN))
         }
@@ -198,6 +225,29 @@ class MainActivity : Activity() {
 
     private fun Ui.lockInCard(root: LinearLayout, st: Settings) {
         val c = section(root, "🔒 Lock in")
+        focusPay = null
+        if (Ledger.focusActive(s) && s.focusFree && Ledger.localFocusActive(s)) {
+            val clock = text(Ledger.fmt(Ledger.freeElapsedSec(s)), 48f, Col.ACCENT, bold = true)
+            focusClock = clock
+            c.add(clock, 0)
+            val pay = text("So far: +${Ledger.fmtShort(Ledger.freePayout(s, st))}", 16f, Col.TEXT, bold = true)
+            focusPay = pay
+            c.add(pay, 4)
+            c.add(
+                text(
+                    "Free lock-in (${Rules.fmtRatio(st.freeRatio)}:1). Stop whenever; you're paid for every minute. " +
+                        "Keep your phone screen off for a +${st.n("phoneDownPct")}% bonus.",
+                    14f, Col.MUTED,
+                ), 10,
+            )
+            c.add(button("Stop & collect", Ui.Style.PRIMARY) {
+                val got = Ledger.stopFree(s, Rules.current(s))
+                syncNow()
+                Toast.makeText(this@MainActivity, "+${Ledger.fmtShort(got)} 💪", Toast.LENGTH_LONG).show()
+                render()
+            }, 0)
+            return
+        }
         if (Ledger.focusActive(s)) {
             val clock = text(Ledger.fmt(Ledger.focusRemainingSec(s)), 48f, Col.ACCENT, bold = true)
             focusClock = clock
@@ -225,7 +275,13 @@ class MainActivity : Activity() {
                         .setNegativeButton("Keep going", null).show()
                 }, 0)
             } else {
-                c.add(text("Started on your laptop. Blocked apps are off until it ends.", 14f, Col.MUTED), 0)
+                c.add(
+                    text(
+                        if (Ledger.remoteFocusFree(s)) "Free lock-in running on your laptop. Blocked apps are off until you stop it there."
+                        else "Started on your laptop. Blocked apps are off until it ends.",
+                        14f, Col.MUTED,
+                    ), 0,
+                )
             }
             return
         }
@@ -248,6 +304,35 @@ class MainActivity : Activity() {
             }
             c.add(r, 8)
         }
+        c.add(button("Free lock-in · stop anytime · ${Rules.fmtRatio(st.freeRatio)}:1", Ui.Style.SECONDARY) {
+            Ledger.startFree(s)
+            syncNow()
+            Toast.makeText(this@MainActivity, "Free lock-in started. Stop whenever you're done 💪", Toast.LENGTH_LONG).show()
+            render()
+        }, 4)
+        c.add(text("Keep your phone screen off during any lock-in for a +${st.n("phoneDownPct")}% bonus.", 13f, Col.MUTED), 0)
+    }
+
+    // ------------------------------------------------------------------ weekly recap
+
+    private fun Ui.recapCard(root: LinearLayout) {
+        val w = Recap.week(this@MainActivity, s)
+        if (w.days == 0) return
+        val c = section(root, "📊 Last 7 days")
+        val lines = mutableListOf(
+            "🔒 Locked in: ${Recap.hm(w.lockedSec)}" + (w.bestLockDay?.let { " (best: ${it.first}, ${Recap.hm(it.second)})" } ?: ""),
+            "📱 Doomscrolling: ${Recap.hm(w.doomSec)} on phone" + (if (w.laptopDoomSec > 0) " + ${Recap.hm(w.laptopDoomSec)} on laptop" else ""),
+            "✅ Days under your streak target: ${w.daysUnderTarget} of ${w.days}",
+            "📞 Family calls: ${w.calls}",
+            "⏳ Time earned: ${Recap.hm(w.earnedSec)}",
+        )
+        if (w.top.isNotEmpty()) lines += "Top time sinks: " + w.top.joinToString(", ") { "${it.first} ${Recap.hm(it.second)}" }
+        lines.forEach { c.add(text(it, 15f), 4) }
+        c.add(space(4))
+        c.add(button("Send to…", Ui.Style.SECONDARY) {
+            val i = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, Recap.shareText(this@MainActivity, s))
+            runCatching { startActivity(Intent.createChooser(i, "Send your week to…")) }
+        }, 0)
     }
 
     private fun syncNow() {
@@ -382,7 +467,9 @@ class MainActivity : Activity() {
     private fun Ui.earnCard(root: LinearLayout, st: Settings) {
         val c = section(root, "Earn time")
         val ways = listOf(
-            "🔒 Lock in: ${Rules.fmtRatio(st.focusRatio)} min → 1 min",
+            "🔒 Lock in: ${Rules.fmtRatio(st.focusRatio)} min → 1 min (free lock-in: ${Rules.fmtRatio(st.freeRatio)} min → 1 min)",
+            "📵 Phone screen off for a whole lock-in: +${st.n("phoneDownPct")}%",
+            "🔥 Streak (under ${Recap.hm(st.n("streakTargetMin") * 60L)} of doomscrolling a day): +${st.n("streak3Min")} min at 3 days, +${st.n("streak7Min")} at 7, +${st.n("streak30Min")} at 30",
             "🏃 Watch workouts: ${Rules.fmtRatio(st.workoutRatio)} min → 1 min",
             "📞 Family call (${st.n("callMinMin")}+ min, phone or WhatsApp/Telegram/imo…): +${st.n("callRewardMin")} min, once per person every ${st.n("callCooldownH")}h",
             "👟 Every ${"%,d".format(st.n("stepsUnit"))} steps: +${st.n("stepsRewardMin")} min (max ${st.n("stepsCapMin")}/day)",
@@ -592,6 +679,11 @@ class MainActivity : Activity() {
         rule("Lock-in ratio", "${Rules.fmtRatio(st.focusRatio)} min → 1 min") {
             numberDialog("Minutes locked in per 1 min earned", st.focusRatio.toString(), decimal = true) { v ->
                 propose(st.copy(focusRatio = v.coerceIn(0.1, 100.0)))
+            }
+        }
+        rule("Free lock-in ratio", "${Rules.fmtRatio(st.freeRatio)} min → 1 min") {
+            numberDialog("Free lock-in minutes per 1 min earned", st.freeRatio.toString(), decimal = true) { v ->
+                propose(st.copy(freeRatio = v.coerceIn(0.1, 100.0)))
             }
         }
         rule("Workout ratio", "${Rules.fmtRatio(st.workoutRatio)} min → 1 min") {

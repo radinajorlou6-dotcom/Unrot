@@ -43,14 +43,22 @@ public class MainForm : Form
         Rebuild();
     }
 
+    static string BalanceText()
+    {
+        var b = Ledger.Balance();
+        return b < 0 ? "-" + Ledger.Fmt(-b) : Ledger.Fmt(b);
+    }
+
     void Live()
     {
         if (!Visible || _balance == null) return;
-        _balance.Text = Ledger.Fmt(Math.Max(0, Ledger.Balance()));
+        _balance.Text = BalanceText();
         if (_focusLine != null)
         {
-            if (Ledger.FocusActive) _focusLine.Text = $"🔒 Locked in · {Ledger.Fmt(Ledger.FocusRemainingSec)} left";
-            else Rebuild();
+            if (!Ledger.FocusActive) Rebuild();
+            else if (Store.S.FocusFree && Ledger.LocalFocus)
+                _focusLine.Text = $"🔒 Free lock-in · {Ledger.Fmt(Ledger.FreeElapsedSec)} so far · +{Ledger.FmtShort(Ledger.FreePayout)}";
+            else _focusLine.Text = $"🔒 Locked in · {Ledger.Fmt(Ledger.FocusRemainingSec)} left";
         }
     }
 
@@ -83,14 +91,36 @@ public class MainForm : Form
 
         // ---- Balance
         Add(L("UNROT", 9, Theme.Muted, true));
-        _balance = L(Ledger.Fmt(Math.Max(0, Ledger.Balance())), 40, Theme.Accent, true);
+        var balNow = Ledger.Balance();
+        _balance = L(BalanceText(), 40, balNow < 0 ? Theme.Warn : Theme.Accent, true);
         _balance.Margin = new Padding(0);
         Add(_balance);
-        Add(L(Ledger.Balance() > 0 ? "of game time (shared with your phone if synced)" : "Out of game time. Lock in to earn more.", 10, Theme.Muted));
+        Add(L(balNow > 0 ? "of game time (shared with your phone if synced)"
+            : balNow < 0 ? $"You owe {Ledger.FmtShort(-balNow)} from overtime. What you earn next pays it back first."
+            : "Out of game time. Lock in to earn more.", 10, balNow < 0 ? Theme.Warn : Theme.Muted));
+        if (Ledger.OvertimeActive)
+            Add(L($"⏱ Overtime: {Ledger.Fmt((Store.S.OvertimeUntil - Store.Now) / 1000)} left to finish the match", 11, Theme.Warn, true));
+        var doom = Ledger.DoomToday();
+        Add(L($"📱 Doomscrolled today: {doom / 60} of {st.DailyCapMin} min (social sites here + scroll apps on your phone)", 9,
+            doom >= st.DailyCapMin * 60L ? Theme.Warn : Theme.Muted));
 
         // ---- Lock in
         Section("Lock in");
-        if (Ledger.FocusActive)
+        if (Ledger.LocalFocus && Store.S.FocusFree)
+        {
+            _focusLine = L($"🔒 Free lock-in · {Ledger.Fmt(Ledger.FreeElapsedSec)} so far · +{Ledger.FmtShort(Ledger.FreePayout)}", 13, Theme.Accent, true);
+            Add(_focusLine);
+            Add(L($"Stop whenever; you're paid for every minute at {Ledger.FmtRatio(st.FreeRatio)}:1. 10 min without touching the mouse or keyboard pauses it.", 10, Theme.Muted));
+            Row().Controls.Add(Theme.Button("Stop & collect", () =>
+            {
+                var got = Ledger.StopFree();
+                Store.Save();
+                _ = _app.SyncNow();
+                MessageBox.Show($"+{Ledger.FmtShort(got)} 💪", "Unrot");
+                Rebuild();
+            }, true));
+        }
+        else if (Ledger.FocusActive)
         {
             _focusLine = L($"🔒 Locked in · {Ledger.Fmt(Ledger.FocusRemainingSec)} left", 13, Theme.Accent, true);
             Add(_focusLine);
@@ -110,7 +140,7 @@ public class MainForm : Form
                     }
                 }));
             }
-            else Add(L("Started on your phone.", 10, Theme.Muted));
+            else Add(L(Ledger.RemoteFocusFree ? "Free lock-in running on your phone." : "Started on your phone.", 10, Theme.Muted));
         }
         else
         {
@@ -118,6 +148,8 @@ public class MainForm : Form
             var r = Row();
             foreach (var m in new[] { 25, 45, 60, 90 })
                 r.Controls.Add(Theme.Button($"{m} min  (+{Ledger.FmtShort((long)(m * 60 / st.FocusRatio))})", () => { _app.StartFocus(m); Rebuild(); }, m == 25));
+            Row().Controls.Add(Theme.Button($"Free lock-in · stop anytime · {Ledger.FmtRatio(st.FreeRatio)}:1", () => { _app.StartFree(); Rebuild(); }));
+            if (st.IdleMin > 0) Add(L($"Lock-ins pause after {st.IdleMin} min without mouse or keyboard.", 9, Theme.Muted));
         }
 
         // ---- Games
@@ -213,6 +245,20 @@ public class MainForm : Form
         Row().Controls.Add(Theme.Button("Save rules", () =>
         {
             var delayed = Rules.ProposeSettings((double)ratio.Value, (int)bank.Value, (int)grace.Value, prot.Checked, (int)engaging.Value, (int)earlyEnd.Value);
+            MessageBox.Show(delayed > 0 ? "Saved. Looser changes kick in 24 hours from now." : "Saved.", "Unrot");
+            Rebuild();
+        }, true));
+        var freeRatio = Num(st.FreeRatio, 0.1m, 100, 1);
+        var payback = Num(st.PaybackMult, 1m, 5, 1);
+        var cap = Num(st.DailyCapMin, 15, 1440, 0);
+        var idleMin = Num(st.IdleMin, 0, 120, 0);
+        Labeled("Free lock-in: minutes per 1 min earned", freeRatio);
+        Labeled($"Overtime payback multiplier (overtime is up to {Ledger.OvertimeMin} min)", payback);
+        Labeled("Most doomscrolling per day (min, phone + laptop)", cap);
+        Labeled("Pause a lock-in after this many idle minutes (0 = never)", idleMin);
+        Row().Controls.Add(Theme.Button("Save these", () =>
+        {
+            var delayed = Rules.ProposeExtra((double)freeRatio.Value, (double)payback.Value, (int)cap.Value, (int)idleMin.Value);
             MessageBox.Show(delayed > 0 ? "Saved. Looser changes kick in 24 hours from now." : "Saved.", "Unrot");
             Rebuild();
         }, true));

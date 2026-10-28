@@ -258,6 +258,9 @@ public static class Games
         return list;
     }
 
+    /// <summary>The window of the game found by the last ForegroundGame() call.</summary>
+    public static IntPtr LastGameHwnd;
+
     /// <summary>A game that's showing on any screen (or focused), if any.</summary>
     public static (int Pid, string Path)? ForegroundGame()
     {
@@ -267,7 +270,7 @@ public static class Games
             GetWindowThreadProcessId(hwnd, out var pid);
             if (pid == 0 || pid == (uint)Environment.ProcessId) continue;
             var game = GameOf((int)pid);
-            if (game != null) return ((int)pid, game);
+            if (game != null) { LastGameHwnd = hwnd; return ((int)pid, game); }
         }
         // Backup: Steam says a game is running and something full-screen (that isn't a browser etc.) is showing.
         if (SteamRunningAppId() == 0) return null;
@@ -278,7 +281,10 @@ public static class Games
             var name = ProcName((int)pid)?.ToLowerInvariant();
             if (name != null && IsFullScreen(hwnd) && !NeverGame.Contains(name) && !Browsers.Contains(name) &&
                 !Store.S.IgnoredGames.Any(g => Rules.Same(Path.GetFileName(g), name)))
+            {
+                LastGameHwnd = hwnd;
                 return ((int)pid, name);
+            }
         }
         return null;
     }

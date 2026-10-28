@@ -6,7 +6,11 @@ namespace Unrot;
 /// <summary>The shared time balance (same math as the phone app).</summary>
 public static class Ledger
 {
-    public record Remote(string Id, string Name, long Earned, long Spent, long FocusUntil);
+    public record Remote(string Id, string Name, long Earned, long Spent, long FocusUntil, bool FocusFree,
+        string DoomDay, long DoomSec, string DoomPrevDay, long DoomPrevSec)
+    {
+        public long DoomOn(string day) => day == DoomDay ? DoomSec : day == DoomPrevDay ? DoomPrevSec : 0;
+    }
 
     static string _cacheRaw;
     static List<Remote> _cache = new();
@@ -25,7 +29,10 @@ public static class Ledger
                 {
                     if (p.Name == Store.S.DeviceId || p.Value.ValueKind != JsonValueKind.Object) continue;
                     list.Add(new Remote(p.Name, Str(p.Value, "name", "device"), Num(p.Value, "earned"),
-                        Num(p.Value, "spent"), Num(p.Value, "focusUntil")));
+                        Num(p.Value, "spent"), Num(p.Value, "focusUntil"),
+                        p.Value.TryGetProperty("focusFree", out var ff) && ff.ValueKind == JsonValueKind.True,
+                        Str(p.Value, "doomDay", ""), Num(p.Value, "doomSec"),
+                        Str(p.Value, "doomPrevDay", ""), Num(p.Value, "doomPrevSec")));
                 }
             }
         }
@@ -55,6 +62,100 @@ public static class Ledger
 
     public static void Spend(long sec) => Store.S.SpentSec += sec;
 
+    // ---------------------------------------------------------------- daily doomscroll cap
+
+    public static string Today => DateTime.Now.ToString("yyyy-MM-dd");
+
+    public static void Rollover()
+    {
+        var t = Today;
+        if (Store.S.DoomDay == t) return;
+        Store.S.DoomPrevDay = Store.S.DoomDay;
+        Store.S.DoomPrevSec = Store.S.DoomSec;
+        Store.S.DoomDay = t;
+        Store.S.DoomSec = 0;
+    }
+
+    public static void AddDoom(long sec)
+    {
+        Rollover();
+        Store.S.DoomSec += sec;
+    }
+
+    /// <summary>Doomscrolling today on this laptop plus a synced phone.</summary>
+    public static long DoomToday()
+    {
+        var t = Today;
+        return (Store.S.DoomDay == t ? Store.S.DoomSec : 0) + Remotes().Sum(r => r.DoomOn(t));
+    }
+
+    public static bool RemoteFocusFree => Remotes().Any(r => r.FocusUntil > Store.Now && r.FocusFree);
+
+    // ---------------------------------------------------------------- overtime
+
+    public const int OvertimeMin = 20;
+    public static bool OvertimeActive => Store.S.OvertimeUntil > Store.Now;
+
+    public static void StartOvertime()
+    {
+        Store.S.OvertimeUntil = Store.Now + OvertimeMin * 60_000L;
+        Store.S.OvertimeSpentStart = Store.S.SpentSec;
+        Store.AddLog($"Overtime: up to {OvertimeMin} min to finish the match (borrowed)");
+    }
+
+    public static void EndOvertime()
+    {
+        if (Store.S.OvertimeUntil == 0) return;
+        var borrowed = Math.Max(0, Store.S.SpentSec - Store.S.OvertimeSpentStart);
+        Store.S.OvertimeUntil = 0;
+        Store.AddLog($"Overtime over: borrowed {FmtShort(borrowed)}, paid back from what you earn next");
+    }
+
+    // ---------------------------------------------------------------- free lock-in
+
+    public const long FreeMaxMs = 4L * 3600 * 1000;
+
+    public static void StartFree()
+    {
+        Store.S.FocusFree = true;
+        Store.S.FocusStart = Store.Now;
+        Store.S.FocusPlannedSec = FreeMaxMs / 1000;
+        Store.S.FocusUntil = Store.Now + FreeMaxMs;
+        Store.AddLog("Started a free lock-in");
+    }
+
+    public static long FreeElapsedSec =>
+        !Store.S.FocusFree || Store.S.FocusUntil == 0 ? 0 :
+        Math.Max(0, (Math.Min(Store.Now, Store.S.FocusUntil) - Store.S.FocusStart) / 1000);
+
+    public static long FreePayout => (long)(FreeElapsedSec / Rules.Current().FreeRatio);
+
+    public static long StopFree()
+    {
+        if (Store.S.FocusUntil == 0 || !Store.S.FocusFree) return 0;
+        var done = FreeElapsedSec;
+        var pay = FreePayout;
+        ClearFocus();
+        if (pay > 0) Credit(pay, $"free lock-in, {done / 60} min");
+        else Store.AddLog("Ended a free lock-in");
+        return pay;
+    }
+
+    static void ClearFocus()
+    {
+        Store.S.FocusUntil = 0;
+        Store.S.FocusPlannedSec = 0;
+        Store.S.FocusFree = false;
+    }
+
+    /// <summary>Idle time doesn't count: pushes the lock-in back by [ms].</summary>
+    public static void ShiftFocus(long ms)
+    {
+        if (Store.S.FocusUntil == 0) return;
+        Store.S.FocusUntil += ms;
+        if (Store.S.FocusFree) Store.S.FocusStart += ms;
+    }
+
     public static bool LocalFocus => Store.S.FocusUntil > Store.Now;
     public static long RemoteFocusUntil => Remotes().Select(r => r.FocusUntil).DefaultIfEmpty(0).Max();
     public static bool FocusActive => LocalFocus || RemoteFocusUntil > Store.Now;
@@ -64,6 +165,8 @@ public static class Ledger
 
     public static void StartFocus(int minutes)
     {
+        Store.S.FocusFree = false;
+        Store.S.FocusStart = Store.Now;
         Store.S.FocusPlannedSec = minutes * 60L;
         Store.S.FocusUntil = Store.Now + minutes * 60_000L;
         Store.AddLog($"Locked in for {minutes} min");
@@ -80,6 +183,7 @@ public static class Ledger
 
     public static long CancelFocus()
     {
+        if (Store.S.FocusFree) return StopFree();
         var pay = EarlyEndPayout();
         var doneMin = Math.Max(0, Store.S.FocusPlannedSec - Math.Max(0, (Store.S.FocusUntil - Store.Now) / 1000)) / 60;
         Store.S.FocusUntil = 0;
@@ -93,6 +197,7 @@ public static class Ledger
     public static long SettleFocus()
     {
         if (Store.S.FocusUntil == 0 || Store.Now < Store.S.FocusUntil) return -1;
+        if (Store.S.FocusFree) return StopFree();
         var planned = Store.S.FocusPlannedSec;
         Store.S.FocusUntil = 0;
         Store.S.FocusPlannedSec = 0;
@@ -149,6 +254,10 @@ public static class Rules
             case "protection": s.Protection = bool.Parse(v); break;
             case "engagingCostPct": s.EngagingCostPct = int.Parse(v); break;
             case "earlyEndPct": s.EarlyEndPct = int.Parse(v); break;
+            case "freeRatio": s.FreeRatio = double.Parse(v, CultureInfo.InvariantCulture); break;
+            case "paybackMult": s.PaybackMult = double.Parse(v, CultureInfo.InvariantCulture); break;
+            case "dailyCapMin": s.DailyCapMin = int.Parse(v); break;
+            case "idleMin": s.IdleMin = int.Parse(v); break;
             default:
                 if (key.StartsWith("ignore:")) Store.S.IgnoredGames.Add(key["ignore:".Length..]);
                 else if (key.StartsWith("unextra:")) Store.S.ExtraGames.RemoveAll(g => Same(g, key["unextra:".Length..]));
@@ -212,6 +321,23 @@ public static class Rules
     public static bool IgnoreGame(string path) =>
         Change("ignore:" + path, "1", true, "Not a game: " + Path.GetFileName(path));
 
+    /// <summary>The newer rules. Same deal: stricter now, looser in 24h.</summary>
+    public static int ProposeExtra(double freeRatio, double paybackMult, int dailyCapMin, int idleMin)
+    {
+        var old = Current();
+        int delayed = 0;
+        if (freeRatio != old.FreeRatio && !Change("freeRatio", freeRatio.ToString(CultureInfo.InvariantCulture),
+                freeRatio < old.FreeRatio, $"Free lock-in ratio → {Ledger.FmtRatio(freeRatio)}:1")) delayed++;
+        if (paybackMult != old.PaybackMult && !Change("paybackMult", paybackMult.ToString(CultureInfo.InvariantCulture),
+                paybackMult < old.PaybackMult, $"Overtime payback → {paybackMult.ToString("0.##", CultureInfo.InvariantCulture)}×")) delayed++;
+        if (dailyCapMin != old.DailyCapMin && !Change("dailyCapMin", dailyCapMin.ToString(),
+                dailyCapMin > old.DailyCapMin, $"Daily doomscroll limit → {dailyCapMin} min")) delayed++;
+        var idleLooser = idleMin == 0 ? old.IdleMin != 0 : old.IdleMin != 0 && idleMin > old.IdleMin;
+        if (idleMin != old.IdleMin && !Change("idleMin", idleMin.ToString(),
+                idleLooser, idleMin == 0 ? "Idle check → off" : $"Idle check → {idleMin} min")) delayed++;
+        return delayed;
+    }
+
     public static void AddSite(string domain, string keywords, bool half)
     {
         Store.S.Pending.RemoveAll(p => p.Key == "unsite:" + domain);
@@ -271,6 +397,11 @@ public static class Sync
                 ["earned"] = Store.S.EarnedSec,
                 ["spent"] = Store.S.SpentSec,
                 ["focusUntil"] = Store.S.FocusUntil,
+                ["focusFree"] = Store.S.FocusFree,
+                ["doomDay"] = Store.S.DoomDay,
+                ["doomSec"] = Store.S.DoomSec,
+                ["doomPrevDay"] = Store.S.DoomPrevDay,
+                ["doomPrevSec"] = Store.S.DoomPrevSec,
                 ["updated"] = Store.Now,
             });
             var put = await Http.PutAsync($"{Base}/devices/{Store.S.DeviceId}.json",

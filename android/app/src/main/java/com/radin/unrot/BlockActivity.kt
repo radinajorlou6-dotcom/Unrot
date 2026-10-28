@@ -25,6 +25,7 @@ class BlockActivity : Activity() {
         const val MODE_NIGHT = "night"
         const val MODE_CHECKIN = "checkin"
         const val MODE_INTRO = "intro"
+        const val MODE_CAP = "cap"
     }
 
     private val h = Handler(Looper.getMainLooper())
@@ -126,10 +127,24 @@ class BlockActivity : Activity() {
                         }
                     }
                 }
+                MODE_CAP -> {
+                    root.add(text("📵", 44f))
+                    root.add(text("That's ${st.n("dailyCapMin") / 60}h ${st.n("dailyCapMin") % 60}m of doomscrolling today".replace(" 0m", ""), 28f, bold = true))
+                    root.add(
+                        text(
+                            "$name and your other scroll apps are done until midnight, whatever your balance. " +
+                                "Games and movies still work.",
+                            16f, Col.MUTED,
+                        ), 24,
+                    )
+                    if (night) nightOptions(root) else dayOptions(root)
+                    root.add(space(8))
+                    root.add(button("Leave", Ui.Style.PRIMARY) { goHome() })
+                }
                 MODE_INTRO -> {
                     root.add(text(name, 18f, Col.MUTED, bold = true), 0)
                     root.add(text("You have", 22f), 0)
-                    val bigBal = text(Ledger.fmt(maxOf(0L, Ledger.balanceSec(s))), 60f, Col.ACCENT, bold = true)
+                    val bigBal = text(Ledger.fmt(maxOf(0L, Ledger.availableSec(s, st, pkg))), 60f, Col.ACCENT, bold = true)
                     root.add(bigBal, 0)
                     root.add(text("of scroll time. It counts down while you're in.", 15f, Col.MUTED), 22)
                     if (night) nightOptions(root) else dayOptions(root)
