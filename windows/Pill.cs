@@ -58,7 +58,7 @@ public class PillForm : Form
     }
 
     /// <summary>Shows the pill on the screen that [hwnd] is on (the primary screen if none).</summary>
-    public void ShowOn(IntPtr hwnd, string text, Color fg, Color bg, string icon = "hourglass_top")
+    public void ShowOn(IntPtr hwnd, string text, Color fg, Color bg, string icon = "hourglass_top", bool bottom = false)
     {
         var screen = hwnd != IntPtr.Zero ? Screen.FromHandle(hwnd) : Screen.PrimaryScreen;
         _flashing = _flashUntil > Store.Now;
@@ -71,9 +71,11 @@ public class PillForm : Form
         var iconW = _icon != null ? (_flashing ? 30 : 24) : 0;
         var w = Math.Max(_flashing ? 420 : 120, textW + iconW + 36);
         var h = _flashing ? 68 : 42;
-        var b = screen.Bounds;
-        var x = _flashing ? b.Left + (b.Width - w) / 2 : b.Right - w - 24;
-        var y = b.Top + 24;
+        // Over games: top-right of the screen. Lock-in timer: bottom-right, just above the taskbar,
+        // so it doesn't sit on top of browser and window buttons while you work.
+        var b = bottom ? screen.WorkingArea : screen.Bounds;
+        var x = _flashing ? b.Left + (b.Width - w) / 2 : b.Right - w - (bottom ? 16 : 24);
+        var y = bottom && !_flashing ? b.Bottom - h - 16 : b.Top + 24;
         if (!Visible) Show();
         SetWindowPos(Handle, HWND_TOPMOST, x, y, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
         Invalidate();

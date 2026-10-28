@@ -204,9 +204,9 @@ public class TrayApp : ApplicationContext
             _pill ??= new PillForm();
             var screenOf = Games.ForegroundWindow();
             if (Store.S.FocusFree && Ledger.LocalFocus)
-                _pill.ShowOn(screenOf, $"{Ledger.Fmt(Ledger.FreeElapsedSec)}  ·  +{Ledger.FmtShort(Ledger.FreePayout)}", Theme.Accent, Theme.Card, "lock");
+                _pill.ShowOn(screenOf, $"{Ledger.Fmt(Ledger.FreeElapsedSec)}  ·  +{Ledger.FmtShort(Ledger.FreePayout)}", Theme.Accent, Theme.Card, "lock", bottom: true);
             else
-                _pill.ShowOn(screenOf, $"{Ledger.Fmt(Ledger.FocusRemainingSec)} left", Theme.Text, Theme.Tint(Theme.Violet, Theme.Card, 0.45f), "lock");
+                _pill.ShowOn(screenOf, $"{Ledger.Fmt(Ledger.FocusRemainingSec)} left", Theme.Text, Theme.Tint(Theme.Violet, Theme.Card, 0.45f), "lock", bottom: true);
             return;
         }
         if (!game && site == null)
