@@ -24,6 +24,14 @@ object Sync {
     fun run(s: Store): Boolean {
         if (!configured(s)) return false
         return try {
+            // Pause / resume / finish sent from your laptop for a lock-in running here.
+            val cmdUrl = base(s) + "/cmd/" + s.deviceId + ".json"
+            val cmd = http("GET", cmdUrl, null).trim()
+            if (cmd.isNotEmpty() && cmd != "null") {
+                runCatching { JSONObject(cmd) }.getOrNull()?.let { Ledger.applyCommand(s, it) }
+                http("DELETE", cmdUrl, null)
+            }
+            val st = Rules.current(s)
             val mine = JSONObject()
                 .put("name", "phone")
                 .put("earned", s.earnedSec)
@@ -34,6 +42,12 @@ object Sync {
                 .put("doomSec", s.doomSec)
                 .put("doomPrevDay", s.doomPrevDay)
                 .put("doomPrevSec", s.doomPrevSec)
+                .put("focusId", s.focusId)
+                .put("focusStart", s.focusStart)
+                .put("focusPlanned", s.focusPlannedSec)
+                .put("focusPaused", s.focusPausedAt)
+                .put("focusRatio", if (s.focusFree) st.freeRatio else st.focusRatio)
+                .put("earlyPct", st.n("earlyEndPct"))
                 .put("rateNow", UnrotService.currentRate)
                 .put("updated", System.currentTimeMillis())
             http("PUT", base(s) + "/devices/" + s.deviceId + ".json", mine.toString())
@@ -46,6 +60,11 @@ object Sync {
             s.lastSyncError = e.message ?: e.javaClass.simpleName
             false
         }
+    }
+
+    /** Blocking. Sends a pause/resume/finish to the device running [sess]. */
+    fun sendCommand(s: Store, sess: Ledger.Session, cmd: JSONObject) {
+        http("PUT", base(s) + "/cmd/" + sess.deviceId + ".json", cmd.toString())
     }
 
     private fun http(method: String, url: String, body: String?): String {

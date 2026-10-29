@@ -7,7 +7,8 @@ namespace Unrot;
 public static class Ledger
 {
     public record Remote(string Id, string Name, long Earned, long Spent, long FocusUntil, bool FocusFree,
-        string DoomDay, long DoomSec, string DoomPrevDay, long DoomPrevSec, double RateNow = 0, long Updated = 0)
+        string DoomDay, long DoomSec, string DoomPrevDay, long DoomPrevSec, double RateNow = 0, long Updated = 0,
+        long FocusId = 0, long FocusStart = 0, long FocusPlanned = 0, long FocusPaused = 0, double FocusRatio = 0, int EarlyPct = 50)
     {
         public long DoomOn(string day) => day == DoomDay ? DoomSec : day == DoomPrevDay ? DoomPrevSec : 0;
     }
@@ -34,7 +35,10 @@ public static class Ledger
                         Str(p.Value, "doomDay", ""), Num(p.Value, "doomSec"),
                         Str(p.Value, "doomPrevDay", ""), Num(p.Value, "doomPrevSec"),
                         p.Value.TryGetProperty("rateNow", out var rn) && rn.ValueKind == JsonValueKind.Number ? rn.GetDouble() : 0,
-                        Num(p.Value, "updated")));
+                        Num(p.Value, "updated"),
+                        Num(p.Value, "focusId"), Num(p.Value, "focusStart"), Num(p.Value, "focusPlanned"), Num(p.Value, "focusPaused"),
+                        p.Value.TryGetProperty("focusRatio", out var fr) && fr.ValueKind == JsonValueKind.Number ? fr.GetDouble() : 0,
+                        p.Value.TryGetProperty("earlyPct", out var ep) && ep.ValueKind == JsonValueKind.Number ? (int)ep.GetDouble() : 50));
                 }
             }
         }
@@ -110,7 +114,6 @@ public static class Ledger
     /// <summary>How fast the phone is spending right now (if it synced in the last 75 seconds).</summary>
     public static double PhoneRate => Remotes().Where(r => Store.Now - r.Updated < 75_000).Select(r => r.RateNow).DefaultIfEmpty(0).Max();
 
-    public static bool RemoteFocusFree => Remotes().Any(r => r.FocusUntil > Store.Now && r.FocusFree);
 
     // ---------------------------------------------------------------- overtime
 
@@ -132,22 +135,108 @@ public static class Ledger
         Store.AddLog($"Overtime over: borrowed {FmtShort(borrowed)}, paid back from what you earn next");
     }
 
-    // ---------------------------------------------------------------- free lock-in
+    // ---------------------------------------------------------------- lock-ins
+    // A lock-in belongs to the device it was started on (that device pays it out when it finishes). The other
+    // device can pause, resume or finish it: pause/resume are sent as a command; finishing pays the device you
+    // finish it on straight away and tells the owner to stop without paying.
 
+    /// <summary>A running lock-in, here or on another device, with everything needed to show and finish it.</summary>
+    public record Session(string DeviceId, string DeviceName, long Id, bool Free, long Start, long Until, long PlannedSec,
+        long PausedAt, double Ratio, int EarlyPct)
+    {
+        public bool Local => DeviceId == null;
+        public bool Paused => PausedAt > 0;
+        long Clock => PausedAt > 0 ? PausedAt : Store.Now;
+        public long RemainingSec => Math.Max(0, (Until - Clock) / 1000);
+        public long ElapsedSec => Free ? Math.Max(0, (Math.Min(Clock, Until) - Start) / 1000) : Math.Max(0, PlannedSec - RemainingSec);
+
+        /// <summary>What finishing right now pays (free: everything so far; timed: the early-end rate).</summary>
+        public long PayNow(long keepSec = long.MaxValue)
+        {
+            var done = Math.Clamp(keepSec, 0, ElapsedSec);
+            return Free ? (long)(done / Ratio) : (long)(done / Ratio * EarlyPct / 100.0);
+        }
+
+        public long FullPay => (long)(PlannedSec / Ratio);
+    }
+
+    static Session LocalSession()
+    {
+        if (!LocalFocus) return null;
+        var st = Rules.Current();
+        var s = Store.S;
+        return new Session(null, "laptop", s.FocusId, s.FocusFree, s.FocusStart, s.FocusUntil, s.FocusPlannedSec, s.FocusPausedAt,
+            s.FocusFree ? st.FreeRatio : st.FocusRatio, st.EarlyEndPct);
+    }
+
+    static HashSet<string> Ended() => (Store.S.EndedRemote ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries).ToHashSet();
+
+    static List<Session> RemoteSessions()
+    {
+        var done = Ended();
+        return Remotes()
+            .Where(r => r.FocusUntil > 0 && (r.FocusPaused > 0 || r.FocusUntil > Store.Now) && !done.Contains($"{r.Id}:{r.FocusId}"))
+            .Select(r => new Session(r.Id, r.Name, r.FocusId, r.FocusFree, r.FocusStart, r.FocusUntil, r.FocusPlanned, r.FocusPaused,
+                r.FocusRatio > 0 ? r.FocusRatio : r.FocusFree ? 5.0 : 3.0, r.EarlyPct))
+            .ToList();
+    }
+
+    /// <summary>The lock-in running right now, on this laptop first, else on another device.</summary>
+    public static Session Current => LocalSession() ?? RemoteSessions().FirstOrDefault();
+
+    public static bool LocalFocus => Store.S.FocusUntil != 0 && (Store.S.FocusPausedAt > 0 || Store.S.FocusUntil > Store.Now);
+    public static bool FocusActive => Current != null;
+    public static bool RemoteFocusFree => RemoteSessions().Any(x => x.Free);
+    public static long FocusRemainingSec => Current?.RemainingSec ?? 0;
+
+    static void NewSession()
+    {
+        Store.S.FocusId = Store.Now;
+        Store.S.FocusStart = Store.Now;
+        Store.S.FocusPausedAt = 0;
+    }
+
+    public static void StartFocus(int minutes)
+    {
+        NewSession();
+        Store.S.FocusFree = false;
+        Store.S.FocusPlannedSec = minutes * 60L;
+        Store.S.FocusUntil = Store.S.FocusStart + minutes * 60_000L;
+        Store.AddLog($"Locked in for {minutes} min");
+    }
+
+    /// <summary>Free-form lock-in: no set length. Ends itself after 4 hours (of unpaused time) if you forget.</summary>
     public const long FreeMaxMs = 4L * 3600 * 1000;
 
     public static void StartFree()
     {
+        NewSession();
         Store.S.FocusFree = true;
-        Store.S.FocusStart = Store.Now;
         Store.S.FocusPlannedSec = FreeMaxMs / 1000;
-        Store.S.FocusUntil = Store.Now + FreeMaxMs;
+        Store.S.FocusUntil = Store.S.FocusStart + FreeMaxMs;
         Store.AddLog("Started a free lock-in");
     }
 
-    public static long FreeElapsedSec =>
-        !Store.S.FocusFree || Store.S.FocusUntil == 0 ? 0 :
-        Math.Max(0, (Math.Min(Store.Now, Store.S.FocusUntil) - Store.S.FocusStart) / 1000);
+    /// <summary>Freezes the timer. Everything stays blocked; the lock-in just doesn't count until you resume.</summary>
+    public static void Pause(string from = null)
+    {
+        if (!LocalFocus || Store.S.FocusPausedAt > 0) return;
+        Store.S.FocusPausedAt = Store.Now;
+        Store.AddLog("Lock-in paused" + (from != null ? $" from your {from}" : "") + " (everything stays blocked)");
+    }
+
+    public static void Resume(string from = null)
+    {
+        var at = Store.S.FocusPausedAt;
+        if (at <= 0 || Store.S.FocusUntil == 0) return;
+        var gap = Math.Max(0, Store.Now - at);
+        Store.S.FocusUntil += gap;
+        Store.S.FocusStart += gap;
+        Store.S.FocusPausedAt = 0;
+        Store.AddLog($"Lock-in resumed after {gap / 60_000} min" + (from != null ? $" from your {from}" : ""));
+    }
+
+    public static long FreeElapsedSec => LocalSession() is { Free: true } x ? x.ElapsedSec : 0;
 
     public static long FreePayout => (long)(FreeElapsedSec / Rules.Current().FreeRatio);
 
@@ -161,7 +250,7 @@ public static class Ledger
         var ran = FreeElapsedSec;
         var done = Math.Clamp(keepSec, 0, ran);
         var pay = (long)(done / Rules.Current().FreeRatio);
-        ClearFocus();
+        EndSession(pay);
         Stat(d => d.Locked += done);
         var trimmed = done < ran ? $" (trimmed from {ran / 60} min)" : "";
         if (pay > 0) return Credit(pay, $"free lock-in, {done / 60} min{trimmed}");
@@ -176,7 +265,7 @@ public static class Ledger
     static void ParkFree()
     {
         var ran = FreeElapsedSec;
-        ClearFocus();
+        EndSession(-1);
         Store.S.FreeReviewSec += ran;
         Store.AddLog($"Free lock-in hit the {FreeMaxMs / 3_600_000}-hour max. Unpaid until you say how long you really worked");
     }
@@ -209,11 +298,15 @@ public static class Ledger
         return take;
     }
 
-    static void ClearFocus()
+    /// <summary>Clears the running lock-in, remembering what it paid (-1: parked for review).</summary>
+    static void EndSession(long paid)
     {
+        Store.S.LastEndedId = Store.S.FocusId;
+        Store.S.LastEndedPaid = paid;
         Store.S.FocusUntil = 0;
         Store.S.FocusPlannedSec = 0;
         Store.S.FocusFree = false;
+        Store.S.FocusPausedAt = 0;
     }
 
     /// <summary>
@@ -271,55 +364,101 @@ public static class Ledger
         catch { }
     }
 
-    public static bool LocalFocus => Store.S.FocusUntil > Store.Now;
-    public static long RemoteFocusUntil => Remotes().Select(r => r.FocusUntil).DefaultIfEmpty(0).Max();
-    public static bool FocusActive => LocalFocus || RemoteFocusUntil > Store.Now;
-
-    public static long FocusRemainingSec =>
-        Math.Max(0, (Math.Max(Store.S.FocusUntil, RemoteFocusUntil) - Store.Now) / 1000);
-
-    public static void StartFocus(int minutes)
-    {
-        Store.S.FocusFree = false;
-        Store.S.FocusStart = Store.Now;
-        Store.S.FocusPlannedSec = minutes * 60L;
-        Store.S.FocusUntil = Store.Now + minutes * 60_000L;
-        Store.AddLog($"Locked in for {minutes} min");
-    }
-
     /// <summary>Seconds you'd get for ending now: the time done, at the early-end rate.</summary>
-    public static long EarlyEndPayout()
-    {
-        if (Store.S.FocusUntil == 0) return 0;
-        var done = Math.Max(0, Store.S.FocusPlannedSec - Math.Max(0, (Store.S.FocusUntil - Store.Now) / 1000));
-        var st = Rules.Current();
-        return (long)(done / st.FocusRatio * st.EarlyEndPct / 100.0);
-    }
+    public static long EarlyEndPayout() => LocalSession()?.PayNow() ?? 0;
 
     public static long CancelFocus()
     {
+        var sess = LocalSession();
+        if (sess == null) return 0;
         if (Store.S.FocusFree) return StopFree();
-        var pay = EarlyEndPayout();
-        var doneSec = Math.Max(0, Store.S.FocusPlannedSec - Math.Max(0, (Store.S.FocusUntil - Store.Now) / 1000));
+        var pay = sess.PayNow();
+        var doneSec = sess.ElapsedSec;
+        EndSession(pay);
         Stat(d => d.Locked += doneSec);
-        var doneMin = Math.Max(0, Store.S.FocusPlannedSec - Math.Max(0, (Store.S.FocusUntil - Store.Now) / 1000)) / 60;
-        Store.S.FocusUntil = 0;
-        Store.S.FocusPlannedSec = 0;
-        if (pay > 0) Credit(pay, $"ended a lock-in early after {doneMin} min ({Rules.Current().EarlyEndPct}% rate)");
-        else Store.AddLog("Ended a lock-in early");
-        return pay;
+        if (pay > 0) return Credit(pay, $"ended a lock-in early after {doneSec / 60} min ({sess.EarlyPct}% rate)");
+        Store.AddLog("Ended a lock-in early");
+        return 0;
     }
 
     /// <summary>Pays out a finished lock-in. Returns seconds earned or -1.</summary>
     public static long SettleFocus()
     {
-        if (Store.S.FocusUntil == 0 || Store.Now < Store.S.FocusUntil) return -1;
+        if (Store.S.FocusUntil == 0 || Store.S.FocusPausedAt > 0 || Store.Now < Store.S.FocusUntil) return -1;
         if (Store.S.FocusFree) { ParkFree(); return NeedsReview; }
         var planned = Store.S.FocusPlannedSec;
+        EndSession(0);
         Stat(d => d.Locked += planned);
-        Store.S.FocusUntil = 0;
-        Store.S.FocusPlannedSec = 0;
-        return Credit((long)(planned / Rules.Current().FocusRatio), $"locked in {planned / 60} min");
+        var pay = Credit((long)(planned / Rules.Current().FocusRatio), $"locked in {planned / 60} min");
+        Store.S.LastEndedPaid = pay;
+        return pay;
+    }
+
+    // ---------------------------------------------------------------- controlling the phone's lock-in
+
+    public static Dictionary<string, object> Command(Session sess, string action, long paid = 0) => new()
+    {
+        ["id"] = Store.Now,
+        ["action"] = action,
+        ["session"] = sess.Id,
+        ["paid"] = paid,
+        ["from"] = "laptop",
+    };
+
+    /// <summary>
+    /// Finishes another device's lock-in here: this laptop gets paid, and that device has already been told
+    /// to stop without paying. Free lock-ins pay only <paramref name="keepSec"/> if given.
+    /// </summary>
+    public static long FinishRemote(Session sess, long keepSec = long.MaxValue)
+    {
+        var done = sess.Free ? Math.Clamp(keepSec, 0, sess.ElapsedSec) : sess.ElapsedSec;
+        var pay = sess.PayNow(keepSec);
+        Store.S.EndedRemote = string.Join(",", Ended().TakeLast(4).Append($"{sess.DeviceId}:{sess.Id}"));
+        Stat(d => d.Locked += done);
+        var what = sess.Free ? "free lock-in" : $"lock-in, ended early ({sess.EarlyPct}% rate)";
+        if (pay > 0) return Credit(pay, $"finished your {sess.DeviceName}'s {what} after {done / 60} min");
+        Store.AddLog($"Finished your {sess.DeviceName}'s lock-in");
+        return 0;
+    }
+
+    /// <summary>Applies a pause/resume/finish sent from another device.</summary>
+    public static void ApplyCommand(JsonElement cmd)
+    {
+        var id = Num(cmd, "id");
+        if (id == 0 || id == Store.S.LastCmdId) return;
+        Store.S.LastCmdId = id;
+        var sid = Num(cmd, "session");
+        var from = Str(cmd, "from", "phone");
+        var paid = Num(cmd, "paid");
+        var mine = LocalFocus && sid == Store.S.FocusId;
+        switch (Str(cmd, "action", ""))
+        {
+            case "pause": if (mine) Pause(from); break;
+            case "resume": if (mine) Resume(from); break;
+            case "end":
+                if (mine)
+                {
+                    EndSession(paid);
+                    Store.AddLog($"Lock-in finished on your {from} (it got the +{FmtShort(paid)})");
+                }
+                else if (sid != 0 && sid == Store.S.LastEndedId)
+                {
+                    // It finished here at the same moment: don't pay it twice.
+                    if (Store.S.LastEndedPaid < 0) Store.S.FreeReviewSec = 0;
+                    else
+                    {
+                        var undo = Math.Min(paid, Store.S.LastEndedPaid);
+                        if (undo > 0)
+                        {
+                            Store.S.EarnedSec -= undo;
+                            Stat(d => d.Earned -= undo);
+                            Store.AddLog($"−{FmtShort(undo)} · that lock-in was also paid on your {from}");
+                        }
+                    }
+                    Store.S.LastEndedId = 0;
+                }
+                break;
+        }
     }
 
     public static string Fmt(long sec)
@@ -500,11 +639,28 @@ public static class Sync
             .Select(_ => chars[System.Security.Cryptography.RandomNumberGenerator.GetInt32(chars.Length)]).ToArray());
     }
 
+    /// <summary>Sends a pause/resume/finish to the device running <paramref name="sess"/>.</summary>
+    public static async Task SendCommandAsync(Ledger.Session sess, Dictionary<string, object> cmd)
+    {
+        var r = await Http.PutAsync($"{Base}/cmd/{sess.DeviceId}.json",
+            new StringContent(JsonSerializer.Serialize(cmd), System.Text.Encoding.UTF8, "application/json"));
+        r.EnsureSuccessStatusCode();
+    }
+
     public static async Task<bool> RunAsync()
     {
         if (!Configured) return false;
         try
         {
+            // Pause / resume / finish sent from your phone for a lock-in running here.
+            var cmdUrl = $"{Base}/cmd/{Store.S.DeviceId}.json";
+            var cmd = (await Http.GetStringAsync(cmdUrl)).Trim();
+            if (cmd.Length > 0 && cmd != "null")
+            {
+                try { using var doc = JsonDocument.Parse(cmd); Ledger.ApplyCommand(doc.RootElement); } catch { }
+                await Http.DeleteAsync(cmdUrl);
+            }
+            var st = Rules.Current();
             var mine = JsonSerializer.Serialize(new Dictionary<string, object>
             {
                 ["name"] = "laptop",
@@ -516,6 +672,12 @@ public static class Sync
                 ["doomSec"] = Store.S.DoomSec,
                 ["doomPrevDay"] = Store.S.DoomPrevDay,
                 ["doomPrevSec"] = Store.S.DoomPrevSec,
+                ["focusId"] = Store.S.FocusId,
+                ["focusStart"] = Store.S.FocusStart,
+                ["focusPlanned"] = Store.S.FocusPlannedSec,
+                ["focusPaused"] = Store.S.FocusPausedAt,
+                ["focusRatio"] = Store.S.FocusFree ? st.FreeRatio : st.FocusRatio,
+                ["earlyPct"] = st.EarlyEndPct,
                 ["updated"] = Store.Now,
             });
             var put = await Http.PutAsync($"{Base}/devices/{Store.S.DeviceId}.json",

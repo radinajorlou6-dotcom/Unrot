@@ -147,7 +147,13 @@ class UnrotService : AccessibilityService() {
     private fun statusText(): String {
         val bal = Ledger.balanceSec(s)
         return when {
-            Ledger.focusActive(s) -> "🔒 Locked in · ${Ledger.fmt(Ledger.focusRemainingSec(s))} left"
+            Ledger.focusActive(s) -> Ledger.session(s)!!.let {
+                when {
+                    it.paused -> "⏸ Lock-in paused · apps stay blocked"
+                    it.free -> "🔒 Free lock-in · ${Ledger.fmt(it.elapsedSec())} so far"
+                    else -> "🔒 Locked in · ${Ledger.fmt(it.remainingSec())} left"
+                }
+            }
             bal <= 0 -> "⏳ Out of scroll time · lock in to earn more"
             else -> "⏳ ${Ledger.fmt(bal)} of scroll time left"
         }
@@ -362,7 +368,8 @@ class UnrotService : AccessibilityService() {
                     .notify(Notif.ID_STATUS, Notif.status(this, statusText()))
             }
         }
-        if (ticks % 30 == 0L) {
+        // Every 10s during a lock-in (so pause/finish from the laptop lands fast), else every 30s.
+        if (ticks % 30 == 0L || (ticks % 10 == 0L && Ledger.focusActive(s))) {
             syncSoon()
             Ledger.flushStats(s)
             weeklyRecapNotice()

@@ -101,6 +101,17 @@ public class AppState
     public bool IdleRefundDone { get; set; }
     public bool FocusFree { get; set; }
     public long FocusStart { get; set; }
+    /// <summary>Identifies the running lock-in across devices (its original start; never shifts on pause).</summary>
+    public long FocusId { get; set; }
+    /// <summary>When the running lock-in was paused (0 = not paused).</summary>
+    public long FocusPausedAt { get; set; }
+    /// <summary>The last lock-in that ended here and what it paid (-1 = parked for review).</summary>
+    public long LastEndedId { get; set; }
+    public long LastEndedPaid { get; set; }
+    /// <summary>The phone's lock-ins finished from this laptop ("deviceId:focusId", comma-separated).</summary>
+    public string EndedRemote { get; set; } = "";
+    /// <summary>The last command from another device that was applied.</summary>
+    public long LastCmdId { get; set; }
     /// <summary>A free lock-in that hit the max on its own: seconds it ran, unpaid until you say how much was real.</summary>
     public long FreeReviewSec { get; set; }
     public string DoomDay { get; set; } = "";

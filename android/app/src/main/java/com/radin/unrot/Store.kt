@@ -132,6 +132,29 @@ class Store private constructor(ctx: Context) {
     var focusStart: Long
         get() = long("focusStart")
         set(v) = putLong("focusStart", v)
+    /** Identifies the running lock-in across devices (its original start time; never shifts on pause). */
+    var focusId: Long
+        get() = long("focusId")
+        set(v) = putLong("focusId", v)
+    /** When the running lock-in was paused (0 = not paused). */
+    var focusPausedAt: Long
+        get() = long("focusPausedAt")
+        set(v) = putLong("focusPausedAt", v)
+    /** The last lock-in that ended here, and what it paid (-1 = parked for review). */
+    var lastEndedId: Long
+        get() = long("lastEndedId")
+        set(v) = putLong("lastEndedId", v)
+    var lastEndedPaid: Long
+        get() = long("lastEndedPaid")
+        set(v) = putLong("lastEndedPaid", v)
+    /** Other devices' lock-ins finished from this phone ("deviceId:focusId", comma-separated). */
+    var endedRemote: String
+        get() = str("endedRemote")
+        set(v) = putStr("endedRemote", v)
+    /** The last command from another device that was applied. */
+    var lastCmdId: Long
+        get() = long("lastCmdId")
+        set(v) = putLong("lastCmdId", v)
     /** A free lock-in that hit the max on its own: seconds it ran, unpaid until you say how much was real. */
     var freeReviewSec: Long
         get() = long("freeReviewSec")

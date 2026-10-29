@@ -57,6 +57,7 @@ class MainActivity : Activity() {
     private var focusRing: RingView? = null
     private var focusPay: TextView? = null
     private var focusWasActive = false
+    private var focusWasPaused = false
     private var hcAvailable = false
     private var hcGranted = false
     private var refreshing = false
@@ -148,23 +149,14 @@ class MainActivity : Activity() {
                 it.fraction = balanceFraction()
                 it.color = balanceColor()
             }
-            val active = Ledger.focusActive(s)
-            if (active) {
-                val st = Rules.current(s)
-                if (s.focusFree && Ledger.localFocusActive(s)) {
-                    val el = Ledger.freeElapsedSec(s)
-                    focusClock?.text = Ledger.fmt(el)
-                    focusPay?.text = "+${Ledger.fmtShort(Ledger.freePayout(s, st))} so far"
-                    focusRing?.fraction = (el % 3600) / 3600f
-                } else {
-                    val left = Ledger.focusRemainingSec(s)
-                    focusClock?.text = Ledger.fmt(left)
-                    if (Ledger.localFocusActive(s) && s.focusPlannedSec > 0) {
-                        focusRing?.fraction = 1f - left.toFloat() / s.focusPlannedSec
-                    }
-                }
+            val sess = Ledger.session(s)
+            val active = sess != null
+            if (sess != null) {
+                focusClock?.text = clockText(sess)
+                focusRing?.fraction = ringFraction(sess)
+                if (sess.free) focusPay?.text = "+${Ledger.fmtShort(sess.payNow())} so far"
             }
-            if (active != focusWasActive) {
+            if (active != focusWasActive || (sess?.paused ?: false) != focusWasPaused) {
                 // A lock-in just ended (or started elsewhere): redraw so the card updates.
                 Ledger.settleFocus(s, Rules.current(s))
                 render()
@@ -240,6 +232,7 @@ class MainActivity : Activity() {
         val st = Rules.current(s)
         Ledger.ensureDailyBase(s, st)
         focusWasActive = Ledger.focusActive(s)
+        focusWasPaused = Ledger.session(s)?.paused ?: false
         balanceView = null; balanceRing = null; focusClock = null; focusRing = null; focusPay = null
         scrollView?.let { if (shownTab >= 0) tabScroll[shownTab] = it.scrollY }
 
@@ -432,70 +425,69 @@ class MainActivity : Activity() {
         c.add(hdr, 14)
         root.add(c, 14)
 
-        if (Ledger.focusActive(s)) {
-            val free = s.focusFree && Ledger.localFocusActive(s)
+        val sess = Ledger.session(s)
+        if (sess != null) {
             val frame = FrameLayout(ctx)
             val ring = RingView(ctx).apply {
-                color = if (free) Col.ACCENT else Col.VIOLET
+                color = when {
+                    sess.paused -> Col.WARN
+                    sess.free -> Col.ACCENT
+                    else -> Col.VIOLET
+                }
                 strokeDp = 12
-                fraction = if (free) (Ledger.freeElapsedSec(s) % 3600) / 3600f
-                else if (Ledger.localFocusActive(s) && s.focusPlannedSec > 0) 1f - Ledger.focusRemainingSec(s).toFloat() / s.focusPlannedSec
-                else 0f
+                fraction = ringFraction(sess)
             }
             focusRing = ring
             frame.addView(ring, FrameLayout.LayoutParams(dp(190), dp(190), Gravity.CENTER))
             val center = col().apply { gravity = Gravity.CENTER }
-            val clock = title(if (free) Ledger.fmt(Ledger.freeElapsedSec(s)) else Ledger.fmt(Ledger.focusRemainingSec(s)), 38f).apply { gravity = Gravity.CENTER }
+            val clock = title(clockText(sess), 38f, if (sess.paused) Col.WARN else Col.TEXT).apply { gravity = Gravity.CENTER }
             focusClock = clock
             center.addView(clock)
-            center.addView(text(if (free) "so far" else "left", 13.5f, Col.MUTED).apply { gravity = Gravity.CENTER })
+            center.addView(text(if (sess.paused) "paused" else if (sess.free) "so far" else "left", 13.5f, Col.MUTED).apply { gravity = Gravity.CENTER })
             frame.addView(center, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
             c.addWrap(frame, 12, Gravity.CENTER_HORIZONTAL)
 
-            if (free) {
-                val pay = chip("+${Ledger.fmtShort(Ledger.freePayout(s, st))} so far", Col.ACCENT)
+            if (!sess.local) c.addWrap(chip("Started on your ${sess.deviceName}", Col.BLUE), 8, Gravity.CENTER_HORIZONTAL)
+            if (sess.free) {
+                val pay = chip("+${Ledger.fmtShort(sess.payNow())} so far", Col.ACCENT)
                 focusPay = pay
                 c.addWrap(pay, 10, Gravity.CENTER_HORIZONTAL)
-                c.add(text("Free lock-in at ${Rules.fmtRatio(st.freeRatio)}:1. Stop whenever; you're paid for every minute.", 14f, Col.MUTED).apply { gravity = Gravity.CENTER }, 12)
-                c.add(button("Stop & collect", Ui.Style.SUCCESS, R.drawable.ic_check_circle) {
-                    val ran = Ledger.freeElapsedSec(s)
+            } else {
+                c.addWrap(chip("+${Ledger.fmtShort(sess.fullPay)} when it ends", Col.ACCENT), 10, Gravity.CENTER_HORIZONTAL)
+            }
+            c.add(
+                text(
+                    when {
+                        sess.paused -> "Paused: the timer's frozen, but blocked apps and sites stay off."
+                        sess.free -> "Free lock-in at ${Rules.fmtRatio(sess.ratio)}:1. Stop whenever; you're paid for every minute."
+                        else -> "Blocked apps and sites (and laptop games, if synced) are off until it ends."
+                    },
+                    14f, Col.MUTED,
+                ).apply { gravity = Gravity.CENTER }, 12,
+            )
+            val r = row()
+            r.addWeighted(button(if (sess.paused) "Resume" else "Pause", Ui.Style.SECONDARY,
+                if (sess.paused) R.drawable.ic_play_arrow else R.drawable.ic_pause) { togglePause(sess) })
+            if (sess.free) {
+                r.addWeighted(button("Stop & collect", Ui.Style.SUCCESS, R.drawable.ic_check_circle) {
                     workedDialog(
                         "Stop & collect",
-                        "It's been running for ${minText(ran / 60)}. If you forgot to stop it, slide it down to the time you really worked.",
-                        ran, "Collect",
-                    ) { keep ->
-                        val got = Ledger.stopFree(s, Rules.current(s), keep)
-                        syncNow()
-                        Toast.makeText(this@MainActivity, "+${Ledger.fmtShort(got)} 💪", Toast.LENGTH_LONG).show()
-                        render()
-                    }
-                }, 0)
-            } else if (Ledger.localFocusActive(s)) {
-                c.addWrap(chip("+${Ledger.fmtShort((s.focusPlannedSec / st.focusRatio).toLong())} when it ends", Col.ACCENT), 10, Gravity.CENTER_HORIZONTAL)
-                c.add(text("Blocked apps and sites (and laptop games, if synced) are off until then.", 14f, Col.MUTED).apply { gravity = Gravity.CENTER }, 12)
-                c.add(button("End early (${st.n("earlyEndPct")}% pay)", Ui.Style.DANGER, R.drawable.ic_stop) {
-                    val st2 = Rules.current(s)
-                    dialog().setTitle("End early?")
-                        .setMessage(
-                            "You'll get ${Ledger.fmtShort(Ledger.earlyEndPayout(s, st2))} for the time you've done " +
-                                "(${st2.n("earlyEndPct")}% rate) instead of ${Ledger.fmtShort((s.focusPlannedSec / st2.focusRatio).toLong())} for finishing.",
-                        )
-                        .setPositiveButton("End it") { _, _ ->
-                            Ledger.cancelFocus(s, Rules.current(s))
-                            syncNow()
-                            render()
-                        }
-                        .setNegativeButton("Keep going", null).show()
+                        "It's been running for ${minText(sess.elapsedSec() / 60)}. If you forgot to stop it, slide it down to the time you really worked.",
+                        sess.elapsedSec(), "Collect", sess.ratio,
+                    ) { keep -> finish(sess, keep) }
                 }, 0)
             } else {
-                c.add(
-                    text(
-                        if (Ledger.remoteFocusFree(s)) "Free lock-in running on your laptop. Blocked apps are off until you stop it there."
-                        else "Started on your laptop. Blocked apps are off until it ends.",
-                        14f, Col.MUTED,
-                    ).apply { gravity = Gravity.CENTER }, 0,
-                )
+                r.addWeighted(button("End early", Ui.Style.DANGER, R.drawable.ic_stop) {
+                    dialog().setTitle("End early?")
+                        .setMessage(
+                            "You'll get ${Ledger.fmtShort(sess.payNow())} for the time you've done " +
+                                "(${sess.earlyPct}% rate) instead of ${Ledger.fmtShort(sess.fullPay)} for finishing.",
+                        )
+                        .setPositiveButton("End it") { _, _ -> finish(sess, Long.MAX_VALUE) }
+                        .setNegativeButton("Keep going", null).show()
+                }, 0)
             }
+            c.add(r, 0)
             c.add(space(8))
             c.add(row().apply {
                 addView(icon(R.drawable.ic_mobile_off, Col.BLUE, 18))
@@ -530,6 +522,18 @@ class MainActivity : Activity() {
             }
             c.add(r, 10)
         }
+        c.add(button("Custom length", Ui.Style.SECONDARY, R.drawable.ic_tune) {
+            val ratio = Rules.current(s).focusRatio
+            sliderDialog(
+                "Custom lock-in", "Any length from 25 minutes up to 8 hours.", 480, 120, "Lock in", minMin = 25,
+                describe = { m -> "${minText(m.toLong())} → +${Ledger.fmtShort((m * 60L / ratio).toLong())}" },
+            ) { m ->
+                Ledger.startFocus(s, m)
+                syncNow()
+                Toast.makeText(this@MainActivity, "Locked in for ${minText(m.toLong())}. Go do the thing 💪", Toast.LENGTH_LONG).show()
+                render()
+            }
+        }, 10)
         c.add(button("Free lock-in · stop anytime · ${Rules.fmtRatio(st.freeRatio)}:1", Ui.Style.SUCCESS, R.drawable.ic_play_arrow) {
             Ledger.startFree(s)
             syncNow()
@@ -610,6 +614,75 @@ class MainActivity : Activity() {
         recent.takeLast(3).forEach { c.add(text("• " + it.text, 16.5f), 4) }
     }
 
+    // ------------------------------------------------------------------ running lock-in (here or on the laptop)
+
+    private fun clockText(sess: Ledger.Session) = Ledger.fmt(if (sess.free) sess.elapsedSec() else sess.remainingSec())
+
+    private fun ringFraction(sess: Ledger.Session): Float = when {
+        sess.free -> (sess.elapsedSec() % 3600) / 3600f
+        sess.plannedSec > 0 -> 1f - sess.remainingSec().toFloat() / sess.plannedSec
+        else -> 0f
+    }
+
+    /** Pause/resume. On the laptop's lock-in it's sent there and shows up here within a few seconds. */
+    private fun togglePause(sess: Ledger.Session) {
+        if (sess.local) {
+            if (sess.paused) Ledger.resume(s) else Ledger.pause(s)
+            syncNow()
+            render()
+            return
+        }
+        val action = if (sess.paused) "resume" else "pause"
+        Thread {
+            val ok = runCatching { Sync.sendCommand(s, sess, Ledger.command(s, sess, action)) }.isSuccess
+            runOnUiThread {
+                Toast.makeText(
+                    this,
+                    if (ok) "Sent to your ${sess.deviceName}. It'll ${action} within a few seconds."
+                    else "Couldn't reach sync. Check your internet and try again.",
+                    Toast.LENGTH_LONG,
+                ).show()
+            }
+            if (ok) {
+                // Pick up the laptop's new state as soon as it's applied.
+                for (wait in listOf(6_000L, 8_000L, 12_000L)) {
+                    Thread.sleep(wait)
+                    runCatching { Sync.run(s) }
+                    runOnUiThread { if (!isFinishing) render() }
+                }
+            }
+        }.start()
+    }
+
+    /** Finishes the lock-in (paying [keepSec] of a free one). A laptop lock-in is paid here and stopped there. */
+    private fun finish(sess: Ledger.Session, keepSec: Long) {
+        val st = Rules.current(s)
+        if (sess.local) {
+            val got = if (sess.free) Ledger.stopFree(s, st, keepSec) else Ledger.cancelFocus(s, st)
+            syncNow()
+            Toast.makeText(this, if (got > 0) "+${Ledger.fmtShort(got)} 💪" else "Lock-in ended", Toast.LENGTH_LONG).show()
+            render()
+            return
+        }
+        Thread {
+            val ok = runCatching {
+                Sync.sendCommand(s, sess, Ledger.command(s, sess, "end", sess.payNow(keepSec)))
+            }.isSuccess
+            val got = if (ok) Ledger.finishRemote(s, st, sess, keepSec) else 0L
+            if (ok) runCatching { Sync.run(s) }
+            runOnUiThread {
+                Toast.makeText(
+                    this,
+                    if (!ok) "Couldn't reach sync. Check your internet and try again."
+                    else if (got > 0) "+${Ledger.fmtShort(got)} 💪 (your ${sess.deviceName} unlocks within a few seconds)"
+                    else "Lock-in ended",
+                    Toast.LENGTH_LONG,
+                ).show()
+                if (!isFinishing) render()
+            }
+        }.start()
+    }
+
     // ------------------------------------------------------------------ keeping yourself honest
 
     private fun minText(min: Long): String = when {
@@ -624,7 +697,7 @@ class MainActivity : Activity() {
      */
     private fun sliderDialog(
         title: String, message: String, maxMin: Int, startMin: Int, confirm: String,
-        describe: (Int) -> String, onConfirm: (Int) -> Unit,
+        minMin: Int = 0, describe: (Int) -> String, onConfirm: (Int) -> Unit,
     ) {
         val ui = Ui(this)
         val box = ui.col().apply { setPadding(dp(22), dp(6), dp(22), 0) }
@@ -632,8 +705,9 @@ class MainActivity : Activity() {
         val value = ui.title(describe(startMin), 24f, Col.GOLD).apply { gravity = Gravity.CENTER }
         box.add(value, 8)
         val bar = android.widget.SeekBar(this).apply {
-            max = maxMin.coerceAtLeast(1)
-            progress = startMin.coerceIn(0, max)
+            max = maxMin.coerceAtLeast(minMin + 1)
+            min = minMin
+            progress = startMin.coerceIn(min, max)
             val tint = android.content.res.ColorStateList.valueOf(Col.VIOLET)
             progressTintList = tint
             thumbTintList = tint
@@ -646,7 +720,7 @@ class MainActivity : Activity() {
         val r = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
         fun stepper(label: String, d: Int) = ui.chip(label, Col.VIOLET).apply {
             setPadding(dp(14), dp(6), dp(14), dp(6))
-            setOnClickListener { bar.progress = (bar.progress + d).coerceIn(0, bar.max) }
+            setOnClickListener { bar.progress = (bar.progress + d).coerceIn(bar.min, bar.max) }
         }
         r.addView(stepper("−", -1))
         r.addView(bar, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
@@ -659,9 +733,11 @@ class MainActivity : Activity() {
     }
 
     /** "How long did you really work?" for a free lock-in that ran [ranSec]. Gives back seconds to keep. */
-    private fun workedDialog(title: String, message: String, ranSec: Long, confirm: String, onKeep: (Long) -> Unit) {
+    private fun workedDialog(
+        title: String, message: String, ranSec: Long, confirm: String,
+        ratio: Double = Rules.current(s).freeRatio, onKeep: (Long) -> Unit,
+    ) {
         val ranMin = (ranSec / 60).toInt()
-        val ratio = Rules.current(s).freeRatio
         sliderDialog(
             title, message, ranMin, ranMin, confirm,
             describe = { m -> "Worked ${minText(m.toLong())} → +${Ledger.fmtShort((m * 60L / ratio).toLong())}" },

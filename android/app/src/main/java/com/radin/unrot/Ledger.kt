@@ -15,6 +15,8 @@ object Ledger {
         val focusUntil: Long, val updated: Long,
         val focusFree: Boolean = false,
         val doomDay: String = "", val doomSec: Long = 0, val doomPrevDay: String = "", val doomPrevSec: Long = 0,
+        val focusId: Long = 0, val focusStart: Long = 0, val focusPlanned: Long = 0, val focusPaused: Long = 0,
+        val focusRatio: Double = 0.0, val earlyPct: Int = 50,
     ) {
         /** This device's doomscrolling on [day], if it knows. */
         fun doomOn(day: String): Long = when (day) {
@@ -40,6 +42,8 @@ object Ledger {
                     k, d.optString("name", "device"), d.optLong("earned"), d.optLong("spent"),
                     d.optLong("focusUntil"), d.optLong("updated"), d.optBoolean("focusFree"),
                     d.optString("doomDay"), d.optLong("doomSec"), d.optString("doomPrevDay"), d.optLong("doomPrevSec"),
+                    d.optLong("focusId"), d.optLong("focusStart"), d.optLong("focusPlanned"), d.optLong("focusPaused"),
+                    d.optDouble("focusRatio", 0.0), d.optInt("earlyPct", 50),
                 )
             }
         }
@@ -185,44 +189,119 @@ object Ledger {
     }
 
     // ---- Lock-in (focus) sessions ----
-    fun localFocusActive(s: Store) = s.focusUntil > System.currentTimeMillis()
+    //
+    // A lock-in belongs to the device it was started on (that device pays it out when it finishes). The other
+    // device can pause, resume or finish it: pause/resume are sent as a command; finishing pays the device you
+    // finish it on straight away and tells the owner to stop without paying.
 
-    fun remoteFocusUntil(s: Store): Long = remotes(s).maxOfOrNull { it.focusUntil } ?: 0L
-
-    fun remoteFocusFree(s: Store): Boolean {
-        val now = System.currentTimeMillis()
-        return remotes(s).any { it.focusUntil > now && it.focusFree }
+    /** A running lock-in, here or on another device, with everything needed to show and finish it. */
+    data class Session(
+        /** null = this phone. */
+        val deviceId: String?,
+        val deviceName: String,
+        val id: Long,
+        val free: Boolean,
+        val start: Long,
+        val until: Long,
+        val plannedSec: Long,
+        val pausedAt: Long,
+        val ratio: Double,
+        val earlyPct: Int,
+    ) {
+        val local get() = deviceId == null
+        val paused get() = pausedAt > 0
+        private fun clock() = if (pausedAt > 0) pausedAt else System.currentTimeMillis()
+        fun remainingSec(): Long = max(0L, (until - clock()) / 1000)
+        fun elapsedSec(): Long =
+            if (free) max(0L, (min(clock(), until) - start) / 1000) else max(0L, plannedSec - remainingSec())
+        /** What finishing right now pays (free: everything so far; timed: the early-end rate). */
+        fun payNow(keepSec: Long = Long.MAX_VALUE): Long {
+            val done = keepSec.coerceIn(0L, elapsedSec())
+            return if (free) (done / ratio).toLong() else (done / ratio * earlyPct / 100.0).toLong()
+        }
+        val fullPay get() = (plannedSec / ratio).toLong()
     }
 
-    fun focusActive(s: Store) = localFocusActive(s) || remoteFocusUntil(s) > System.currentTimeMillis()
+    private fun localSession(s: Store): Session? {
+        if (!localFocusActive(s)) return null
+        val st = Rules.current(s)
+        return Session(
+            null, "phone", s.focusId, s.focusFree, s.focusStart, s.focusUntil, s.focusPlannedSec, s.focusPausedAt,
+            if (s.focusFree) st.freeRatio else st.focusRatio, st.n("earlyEndPct"),
+        )
+    }
 
-    fun focusRemainingSec(s: Store): Long {
-        val until = max(s.focusUntil, remoteFocusUntil(s))
-        return max(0L, (until - System.currentTimeMillis()) / 1000)
+    private fun ended(s: Store) = s.endedRemote.split(',').filter { it.isNotBlank() }.toSet()
+
+    private fun remoteSessions(s: Store): List<Session> {
+        val now = System.currentTimeMillis()
+        val done = ended(s)
+        return remotes(s).filter {
+            it.focusUntil > 0 && (it.focusPaused > 0 || it.focusUntil > now) && "${it.id}:${it.focusId}" !in done
+        }.map {
+            Session(
+                it.id, it.name, it.focusId, it.focusFree, it.focusStart, it.focusUntil, it.focusPlanned, it.focusPaused,
+                if (it.focusRatio > 0) it.focusRatio else if (it.focusFree) 5.0 else 3.0, it.earlyPct,
+            )
+        }
+    }
+
+    /** The lock-in that's running right now, on this phone first, else on another device. */
+    fun session(s: Store): Session? = localSession(s) ?: remoteSessions(s).firstOrNull()
+
+    fun localFocusActive(s: Store) =
+        s.focusUntil != 0L && (s.focusPausedAt > 0 || s.focusUntil > System.currentTimeMillis())
+
+    fun remoteFocusFree(s: Store): Boolean = remoteSessions(s).any { it.free }
+
+    fun focusActive(s: Store) = session(s) != null
+
+    fun focusRemainingSec(s: Store): Long = session(s)?.remainingSec() ?: 0L
+
+    private fun newSession(s: Store) {
+        val now = System.currentTimeMillis()
+        s.focusId = now
+        s.focusStart = now
+        s.focusPausedAt = 0
     }
 
     fun startFocus(s: Store, minutes: Int) {
+        newSession(s)
         s.focusFree = false
-        s.focusStart = System.currentTimeMillis()
         s.focusPlannedSec = minutes * 60L
-        s.focusUntil = System.currentTimeMillis() + minutes * 60_000L
+        s.focusUntil = s.focusStart + minutes * 60_000L
         s.log("Locked in for $minutes min")
     }
 
-    /** Free-form lock-in: no set length. Ends itself after 4 hours if you forget. */
+    /** Free-form lock-in: no set length. Ends itself after 4 hours (of unpaused time) if you forget. */
     const val FREE_MAX_MS = 4L * 3600 * 1000
 
     fun startFree(s: Store) {
-        val now = System.currentTimeMillis()
+        newSession(s)
         s.focusFree = true
-        s.focusStart = now
         s.focusPlannedSec = FREE_MAX_MS / 1000
-        s.focusUntil = now + FREE_MAX_MS
+        s.focusUntil = s.focusStart + FREE_MAX_MS
         s.log("Started a free lock-in")
     }
 
-    fun freeElapsedSec(s: Store): Long =
-        if (!s.focusFree || s.focusUntil == 0L) 0 else max(0L, (min(System.currentTimeMillis(), s.focusUntil) - s.focusStart) / 1000)
+    /** Freezes the timer. Everything stays blocked; the lock-in just doesn't count down (or up) until you resume. */
+    fun pause(s: Store, from: String? = null) = synchronized(s.lock) {
+        if (!localFocusActive(s) || s.focusPausedAt > 0) return
+        s.focusPausedAt = System.currentTimeMillis()
+        s.log("Lock-in paused" + (from?.let { " from your $it" } ?: "") + " (everything stays blocked)")
+    }
+
+    fun resume(s: Store, from: String? = null) = synchronized(s.lock) {
+        val at = s.focusPausedAt
+        if (at <= 0 || s.focusUntil == 0L) return
+        val gap = max(0L, System.currentTimeMillis() - at)
+        s.focusUntil = s.focusUntil + gap
+        s.focusStart = s.focusStart + gap
+        s.focusPausedAt = 0
+        s.log("Lock-in resumed after ${gap / 60_000} min" + (from?.let { " from your $it" } ?: ""))
+    }
+
+    fun freeElapsedSec(s: Store): Long = localSession(s)?.takeIf { it.free }?.elapsedSec() ?: 0L
 
     fun freePayout(s: Store, st: Settings): Long = (freeElapsedSec(s) / st.freeRatio).toLong()
 
@@ -235,7 +314,7 @@ object Ledger {
         val ran = freeElapsedSec(s)
         val done = keepSec.coerceIn(0L, ran)
         val pay = (done / st.freeRatio).toLong()
-        clearFocus(s)
+        endSession(s, pay)
         stat("l", done)
         s.lastFocusPaid = pay
         val trimmed = if (done < ran) " (trimmed from ${ran / 60} min)" else ""
@@ -249,7 +328,7 @@ object Ledger {
     /** A free lock-in that ran all the way to the max was almost certainly forgotten: park it unpaid. */
     private fun parkFree(s: Store) {
         val ran = freeElapsedSec(s)
-        clearFocus(s)
+        endSession(s, -1)
         s.lastFocusPaid = 0
         s.freeReviewBonus = false
         s.freeReviewSec = s.freeReviewSec + ran
@@ -292,30 +371,29 @@ object Ledger {
         take
     }
 
-    private fun clearFocus(s: Store) {
+    /** Clears the running lock-in, remembering what it paid ([paid] = -1: parked for review). */
+    private fun endSession(s: Store, paid: Long) {
+        s.lastEndedId = s.focusId
+        s.lastEndedPaid = paid
         s.focusUntil = 0
         s.focusPlannedSec = 0
         s.focusFree = false
+        s.focusPausedAt = 0
     }
 
     /** Seconds you'd get for ending right now: the time done, at the early-end rate. */
-    fun earlyEndPayout(s: Store, st: Settings): Long {
-        if (s.focusUntil == 0L) return 0
-        val done = max(0L, s.focusPlannedSec - max(0L, (s.focusUntil - System.currentTimeMillis()) / 1000))
-        return (done / st.focusRatio * st.n("earlyEndPct") / 100.0).toLong()
-    }
+    fun earlyEndPayout(s: Store, st: Settings): Long = localSession(s)?.payNow() ?: 0L
 
     /** Ends a lock-in early: you're paid for the time you did, at a reduced rate. */
     fun cancelFocus(s: Store, st: Settings): Long = synchronized(s.lock) {
-        if (s.focusUntil == 0L) return 0
+        val sess = localSession(s) ?: return 0
         if (s.focusFree) return stopFree(s, st)
-        val pay = earlyEndPayout(s, st)
-        val doneSec = max(0L, s.focusPlannedSec - max(0L, (s.focusUntil - System.currentTimeMillis()) / 1000))
-        val doneMin = doneSec / 60
-        clearFocus(s)
+        val pay = sess.payNow()
+        val doneSec = sess.elapsedSec()
+        endSession(s, pay)
         stat("l", doneSec)
         s.lastFocusPaid = pay
-        if (pay > 0) credit(s, st, pay, "ended a lock-in early after $doneMin min (${st.n("earlyEndPct")}% rate)")
+        if (pay > 0) credit(s, st, pay, "ended a lock-in early after ${doneSec / 60} min (${st.n("earlyEndPct")}% rate)")
         else s.log("Ended a lock-in early")
         pay
     }
@@ -323,17 +401,81 @@ object Ledger {
     /** Pays out a finished lock-in. Returns seconds earned, or -1 if nothing finished. */
     fun settleFocus(s: Store, st: Settings): Long = synchronized(s.lock) {
         val until = s.focusUntil
-        if (until == 0L || System.currentTimeMillis() < until) return -1
+        if (until == 0L || s.focusPausedAt > 0 || System.currentTimeMillis() < until) return -1
         if (s.focusFree) {
             parkFree(s)
             return NEEDS_REVIEW
         }
         val planned = s.focusPlannedSec
-        clearFocus(s)
+        endSession(s, 0)
         stat("l", planned)
         val pay = credit(s, st, (planned / st.focusRatio).toLong(), "locked in ${planned / 60} min")
         s.lastFocusPaid = pay
+        s.lastEndedPaid = pay
         pay
+    }
+
+    // ---- Controlling a lock-in that's running on another device ----
+
+    fun command(s: Store, sess: Session, action: String, paid: Long = 0): JSONObject = JSONObject()
+        .put("id", System.currentTimeMillis())
+        .put("action", action)
+        .put("session", sess.id)
+        .put("paid", paid)
+        .put("from", "phone")
+
+    /**
+     * Finishes another device's lock-in here: this phone gets paid, and that device is told (already, by the
+     * caller) to stop without paying. Free lock-ins pay only [keepSec] if given.
+     */
+    fun finishRemote(s: Store, st: Settings, sess: Session, keepSec: Long = Long.MAX_VALUE): Long = synchronized(s.lock) {
+        val done = if (sess.free) keepSec.coerceIn(0L, sess.elapsedSec()) else sess.elapsedSec()
+        val pay = sess.payNow(keepSec)
+        s.endedRemote = (ended(s).toList().takeLast(4) + "${sess.deviceId}:${sess.id}").joinToString(",")
+        stat("l", done)
+        val what = if (sess.free) "free lock-in" else "lock-in, ended early (${sess.earlyPct}% rate)"
+        if (pay > 0) credit(s, st, pay, "finished your ${sess.deviceName}'s $what after ${done / 60} min")
+        else s.log("Finished your ${sess.deviceName}'s lock-in")
+        pay
+    }
+
+    /** Applies a pause/resume/finish sent from another device. Returns a line worth showing, if any. */
+    fun applyCommand(s: Store, cmd: JSONObject): String? = synchronized(s.lock) {
+        val id = cmd.optLong("id")
+        if (id == 0L || id == s.lastCmdId) return null
+        s.lastCmdId = id
+        val sid = cmd.optLong("session")
+        val from = cmd.optString("from", "laptop")
+        val paid = cmd.optLong("paid")
+        val mine = localFocusActive(s) && sid == s.focusId
+        when (cmd.optString("action")) {
+            "pause" -> if (mine) { pause(s, from); return "Lock-in paused from your $from" }
+            "resume" -> if (mine) { resume(s, from); return "Lock-in resumed from your $from" }
+            "end" -> {
+                if (mine) {
+                    endSession(s, paid)
+                    s.lastFocusPaid = paid
+                    s.log("Lock-in finished on your $from (it got the +${fmtShort(paid)})")
+                    return "Lock-in finished on your $from"
+                }
+                if (sid != 0L && sid == s.lastEndedId) {
+                    // It finished here at the same moment: don't pay it twice.
+                    if (s.lastEndedPaid < 0) {
+                        s.freeReviewSec = 0
+                        s.freeReviewBonus = false
+                    } else {
+                        val undo = min(paid, s.lastEndedPaid)
+                        if (undo > 0) {
+                            s.earnedSec = s.earnedSec - undo
+                            stat("e", -undo)
+                            s.log("−${fmtShort(undo)} · that lock-in was also paid on your $from")
+                        }
+                    }
+                    s.lastEndedId = 0
+                }
+            }
+        }
+        null
     }
 
     fun fmt(sec: Long): String {

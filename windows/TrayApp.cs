@@ -98,6 +98,8 @@ public class TrayApp : ApplicationContext
         try { await Sync.RunAsync(); } finally { _syncing = false; }
     }
 
+    public void Toast(string title, string text) => Balloon(title, text);
+
     void Balloon(string title, string text)
     {
         _icon.BalloonTipTitle = title;
@@ -197,10 +199,15 @@ public class TrayApp : ApplicationContext
         {
             Store.Save();
             var bal = Math.Max(0, Ledger.Balance());
-            var t = Ledger.FocusActive ? $"Unrot · locked in, {Ledger.Fmt(Ledger.FocusRemainingSec)} left" : $"Unrot · {Ledger.Fmt(bal)} left";
+            var cur = Ledger.Current;
+            var t = cur == null ? $"Unrot · {Ledger.Fmt(bal)} left"
+                : cur.Paused ? "Unrot · lock-in paused (still blocked)"
+                : cur.Free ? $"Unrot · free lock-in, {Ledger.Fmt(cur.ElapsedSec)} so far"
+                : $"Unrot · locked in, {Ledger.Fmt(cur.RemainingSec)} left";
             _icon.Text = t.Length > 63 ? t[..63] : t;
         }
-        if (_ticks % 30 == 0) _ = SyncNow();
+        // Every 10s during a lock-in (so pause/finish from the phone lands fast), else every 30s.
+        if (_ticks % 30 == 0 || (_ticks % 10 == 0 && Ledger.FocusActive)) _ = SyncNow();
     }
 
     /// <summary>Time you can actually use on what's showing: balance, and the daily limit for social sites.</summary>
@@ -220,14 +227,17 @@ public class TrayApp : ApplicationContext
             return;
         }
         // During a lock-in (here or on the phone): the lock-in timer, on whatever screen you're using.
-        if (Ledger.FocusActive)
+        var sess = Ledger.Current;
+        if (sess != null)
         {
             _pill ??= new PillForm();
             var screenOf = Games.ForegroundWindow();
-            if (Store.S.FocusFree && Ledger.LocalFocus)
-                _pill.ShowOn(screenOf, $"{Ledger.Fmt(Ledger.FreeElapsedSec)}  ·  +{Ledger.FmtShort(Ledger.FreePayout)}", Theme.Accent, Theme.Card, "lock", bottom: true);
+            if (sess.Paused)
+                _pill.ShowOn(screenOf, $"Paused · {Ledger.Fmt(sess.Free ? sess.ElapsedSec : sess.RemainingSec)}", Theme.Warn, Theme.Card, "pause", bottom: true);
+            else if (sess.Free)
+                _pill.ShowOn(screenOf, $"{Ledger.Fmt(sess.ElapsedSec)}  ·  +{Ledger.FmtShort(sess.PayNow())}", Theme.Accent, Theme.Card, "lock", bottom: true);
             else
-                _pill.ShowOn(screenOf, $"{Ledger.Fmt(Ledger.FocusRemainingSec)} left", Theme.Text, Theme.Tint(Theme.Violet, Theme.Card, 0.45f), "lock", bottom: true);
+                _pill.ShowOn(screenOf, $"{Ledger.Fmt(sess.RemainingSec)} left", Theme.Text, Theme.Tint(Theme.Violet, Theme.Card, 0.45f), "lock", bottom: true);
             return;
         }
         if (!game && site == null)
@@ -455,7 +465,7 @@ public static class Prompt
     /// A minutes slider with a live line above it. Returns the chosen minutes, or null if cancelled.
     /// Arrow keys move it one minute at a time.
     /// </summary>
-    public static int? Slider(string title, string message, int maxMin, int startMin, string confirm, Func<int, string> describe)
+    public static int? Slider(string title, string message, int maxMin, int startMin, string confirm, Func<int, string> describe, int minMin = 0)
     {
         using var f = new Form
         {
@@ -477,10 +487,10 @@ public static class Prompt
         };
         var bar = new TrackBar
         {
-            Left = 14, Top = 114, Width = 432, Minimum = 0, Maximum = Math.Max(1, maxMin),
+            Left = 14, Top = 114, Width = 432, Minimum = minMin, Maximum = Math.Max(minMin + 1, maxMin),
             TickStyle = TickStyle.None, SmallChange = 1, LargeChange = Math.Max(1, maxMin / 12), BackColor = Theme.Card,
         };
-        bar.Value = Math.Clamp(startMin, 0, bar.Maximum);
+        bar.Value = Math.Clamp(startMin, bar.Minimum, bar.Maximum);
         bar.ValueChanged += (_, _) => value.Text = describe(bar.Value);
         var ok = new Button { Text = confirm, Left = 236, Top = 170, Width = 120, Height = 32, DialogResult = DialogResult.OK, FlatStyle = FlatStyle.Flat, BackColor = Theme.Violet, ForeColor = Color.White };
         var cancel = new Button { Text = "Cancel", Left = 362, Top = 170, Width = 80, Height = 32, DialogResult = DialogResult.Cancel, FlatStyle = FlatStyle.Flat };
@@ -495,10 +505,10 @@ public static class Prompt
         min >= 60 && min % 60 == 0 ? $"{min / 60} h" : min >= 60 ? $"{min / 60} h {min % 60} min" : $"{min} min";
 
     /// <summary>"How long did you really work?" for a free lock-in that ran <paramref name="ranSec"/>. Returns seconds to keep, or null.</summary>
-    public static long? Worked(string title, string message, long ranSec, string confirm)
+    public static long? Worked(string title, string message, long ranSec, string confirm, double ratio = 0)
     {
         var ranMin = (int)(ranSec / 60);
-        var ratio = Rules.Current().FreeRatio;
+        if (ratio <= 0) ratio = Rules.Current().FreeRatio;
         var m = Slider(title, message, ranMin, ranMin, confirm,
             v => $"Worked {MinText(v)} → +{Ledger.FmtShort((long)(v * 60L / ratio))}");
         if (m == null) return null;

@@ -17,6 +17,7 @@ public class MainForm : Form
     Ring _balanceRing, _focusRing;
     Control _focusPay;
     bool _focusWasActive;
+    bool _focusWasPaused;
     const int CW = 660; // card width
 
     public MainForm(TrayApp app)
@@ -115,22 +116,14 @@ public class MainForm : Form
             _balanceRing.Fraction = BalanceFraction();
             _balanceRing.Invalidate();
         }
-        var active = Ledger.FocusActive;
-        if (active != _focusWasActive) { Rebuild(); return; }
-        if (_focusRing != null && active)
+        var sess = Ledger.Current;
+        var active = sess != null;
+        if (active != _focusWasActive || (sess?.Paused ?? false) != _focusWasPaused) { Rebuild(); return; }
+        if (_focusRing != null && sess != null)
         {
-            if (Store.S.FocusFree && Ledger.LocalFocus)
-            {
-                _focusRing.Big = Ledger.Fmt(Ledger.FreeElapsedSec);
-                _focusRing.Fraction = Ledger.FreeElapsedSec % 3600 / 3600f;
-                if (_focusPay != null) _focusPay.Text = $"+{Ledger.FmtShort(Ledger.FreePayout)} so far";
-            }
-            else
-            {
-                _focusRing.Big = Ledger.Fmt(Ledger.FocusRemainingSec);
-                if (Ledger.LocalFocus && Store.S.FocusPlannedSec > 0)
-                    _focusRing.Fraction = 1f - Ledger.FocusRemainingSec / (float)Store.S.FocusPlannedSec;
-            }
+            _focusRing.Big = ClockText(sess);
+            _focusRing.Fraction = RingFraction(sess);
+            if (sess.Free && _focusPay != null) _focusPay.Text = $"+{Ledger.FmtShort(sess.PayNow())} so far";
             _focusRing.Invalidate();
         }
     }
@@ -249,6 +242,7 @@ public class MainForm : Form
     {
         if (IsDisposed) return;
         _focusWasActive = Ledger.FocusActive;
+        _focusWasPaused = Ledger.Current?.Paused ?? false;
         _balanceRing = null; _focusRing = null; _focusPay = null;
         foreach (var (item, t) in _nav) { item.Selected = t == _tab; item.Invalidate(); }
         _panel.SuspendLayout();
@@ -360,63 +354,113 @@ public class MainForm : Form
         c.Controls.Add(b);
     }
 
+    static string ClockText(Ledger.Session s) => Ledger.Fmt(s.Free ? s.ElapsedSec : s.RemainingSec);
+
+    static float RingFraction(Ledger.Session s) =>
+        s.Free ? s.ElapsedSec % 3600 / 3600f : s.PlannedSec > 0 ? 1f - s.RemainingSec / (float)s.PlannedSec : 0f;
+
+    /// <summary>Pause/resume. On the phone's lock-in it's sent there and shows up here within a few seconds.</summary>
+    async void TogglePause(Ledger.Session sess)
+    {
+        if (sess.Local)
+        {
+            if (sess.Paused) Ledger.Resume(); else Ledger.Pause();
+            Store.Save();
+            _ = _app.SyncNow();
+            Rebuild();
+            return;
+        }
+        var action = sess.Paused ? "resume" : "pause";
+        try { await Sync.SendCommandAsync(sess, Ledger.Command(sess, action)); }
+        catch { MessageBox.Show("Couldn't reach sync. Check your internet and try again.", "Unrot"); return; }
+        _app.Toast($"Sent to your {sess.DeviceName}", $"It'll {action} within a few seconds.");
+        foreach (var wait in new[] { 6000, 8000, 12000 })
+        {
+            await Task.Delay(wait);
+            await _app.SyncNow();
+            if (IsDisposed) return;
+            Rebuild();
+        }
+    }
+
+    /// <summary>Finishes the lock-in (paying keepSec of a free one). A phone lock-in is paid here and stopped there.</summary>
+    async void Finish(Ledger.Session sess, long keepSec)
+    {
+        long got;
+        if (sess.Local)
+        {
+            got = sess.Free ? Ledger.StopFree(keepSec) : Ledger.CancelFocus();
+        }
+        else
+        {
+            try { await Sync.SendCommandAsync(sess, Ledger.Command(sess, "end", sess.PayNow(keepSec))); }
+            catch { MessageBox.Show("Couldn't reach sync. Check your internet and try again.", "Unrot"); return; }
+            got = Ledger.FinishRemote(sess, keepSec);
+        }
+        Store.Save();
+        _ = _app.SyncNow();
+        MessageBox.Show(got > 0 ? $"+{Ledger.FmtShort(got)} 💪" + (sess.Local ? "" : $" (your {sess.DeviceName} unlocks within a few seconds)") : "Lock-in ended", "Unrot");
+        if (!IsDisposed) Rebuild();
+    }
+
     void LockInCard(Settings st)
     {
         var c = NewCard("Lock in", "lock", Theme.Violet, new Chip($"{Ledger.FmtRatio(st.FocusRatio)} : 1", Theme.Violet));
-        if (Ledger.FocusActive)
+        var sess = Ledger.Current;
+        if (sess != null)
         {
-            var free = Store.S.FocusFree && Ledger.LocalFocus;
             var r = Row(c, c.Inner);
             r.WrapContents = false;
             _focusRing = new Ring(170)
             {
-                Big = free ? Ledger.Fmt(Ledger.FreeElapsedSec) : Ledger.Fmt(Ledger.FocusRemainingSec),
-                Small = free ? "so far" : "left",
-                Color = free ? Theme.Accent : Theme.Violet,
+                Big = ClockText(sess),
+                Small = sess.Paused ? "paused" : sess.Free ? "so far" : "left",
+                Color = sess.Paused ? Theme.Warn : sess.Free ? Theme.Accent : Theme.Violet,
+                Fraction = RingFraction(sess),
                 Thickness = 12,
             };
             _focusRing.Margin = new Padding(0, 0, 24, 6);
             r.Controls.Add(_focusRing);
             var col = Column(r, c.Inner - 200);
-            if (free)
+            if (!sess.Local) col.Controls.Add(new Chip($"Started on your {sess.DeviceName}", Theme.Blue) { Margin = new Padding(0, 6, 0, 0) });
+            if (sess.Free)
             {
-                _focusPay = new Chip($"+{Ledger.FmtShort(Ledger.FreePayout)} so far", Theme.Accent) { Margin = new Padding(0, 10, 0, 10) };
+                _focusPay = new Chip($"+{Ledger.FmtShort(sess.PayNow())} so far", Theme.Accent) { Margin = new Padding(0, 10, 0, 10) };
                 col.Controls.Add(_focusPay);
-                col.Controls.Add(L($"Free lock-in at {Ledger.FmtRatio(st.FreeRatio)}:1. Stop whenever; you're paid for every minute.", 10, Theme.Muted, false, c.Inner - 200));
-                col.Controls.Add(Btn("Stop & collect", () =>
-                {
-                    var ran = Ledger.FreeElapsedSec;
-                    var keep = Prompt.Worked("Stop & collect",
-                        $"It's been running for {Prompt.MinText(ran / 60)}. If you forgot to stop it, slide it down to the time you really worked.",
-                        ran, "Collect");
-                    if (keep == null) return;
-                    var got = Ledger.StopFree(keep.Value);
-                    Store.Save();
-                    _ = _app.SyncNow();
-                    MessageBox.Show($"+{Ledger.FmtShort(got)} 💪", "Unrot");
-                    Rebuild();
-                }, GameButton.Kind.Success, "check_circle"));
-            }
-            else if (Ledger.LocalFocus)
-            {
-                col.Controls.Add(new Chip($"+{Ledger.FmtShort((long)(Store.S.FocusPlannedSec / st.FocusRatio))} when it ends", Theme.Accent) { Margin = new Padding(0, 10, 0, 10) });
-                col.Controls.Add(L("Games, blocked sites (and your phone's blocked apps) are off until then.", 10, Theme.Muted, false, c.Inner - 200));
-                col.Controls.Add(Btn($"End early ({st.EarlyEndPct}% pay)", () =>
-                {
-                    var pay = Ledger.EarlyEndPayout();
-                    var full = (long)(Store.S.FocusPlannedSec / st.FocusRatio);
-                    if (MessageBox.Show($"You'll get {Ledger.FmtShort(pay)} for the time you've done ({st.EarlyEndPct}% rate) instead of {Ledger.FmtShort(full)} for finishing. End it?", "Unrot", MessageBoxButtons.YesNo) == DialogResult.Yes)
-                    {
-                        Ledger.CancelFocus();
-                        Store.Save();
-                        _ = _app.SyncNow();
-                        Rebuild();
-                    }
-                }, GameButton.Kind.Danger, "stop"));
             }
             else
             {
-                col.Controls.Add(L(Ledger.RemoteFocusFree ? "Free lock-in running on your phone." : "Started on your phone. Games are off until it ends.", 10.5f, Theme.Muted, false, c.Inner - 200));
+                col.Controls.Add(new Chip($"+{Ledger.FmtShort(sess.FullPay)} when it ends", Theme.Accent) { Margin = new Padding(0, 10, 0, 10) });
+            }
+            col.Controls.Add(L(
+                sess.Paused ? "Paused: the timer's frozen, but games and blocked sites stay off."
+                : sess.Free ? $"Free lock-in at {Ledger.FmtRatio(sess.Ratio)}:1. Stop whenever; you're paid for every minute."
+                : "Games, blocked sites (and your phone's blocked apps) are off until it ends.",
+                10, Theme.Muted, false, c.Inner - 200));
+            var btns = Row(col, c.Inner - 200);
+            btns.Margin = new Padding(0, 8, 0, 0);
+            var pb = Btn(sess.Paused ? "Resume" : "Pause", () => TogglePause(sess), GameButton.Kind.Secondary, sess.Paused ? "play_arrow" : "pause");
+            pb.Margin = new Padding(0, 0, 10, 0);
+            btns.Controls.Add(pb);
+            if (sess.Free)
+            {
+                btns.Controls.Add(Btn("Stop & collect", () =>
+                {
+                    var ran = sess.ElapsedSec;
+                    var keep = Prompt.Worked("Stop & collect",
+                        $"It's been running for {Prompt.MinText(ran / 60)}. If you forgot to stop it, slide it down to the time you really worked.",
+                        ran, "Collect", sess.Ratio);
+                    if (keep != null) Finish(sess, keep.Value);
+                }, GameButton.Kind.Success, "check_circle"));
+            }
+            else
+            {
+                btns.Controls.Add(Btn($"End early ({sess.EarlyPct}% pay)", () =>
+                {
+                    if (MessageBox.Show($"You'll get {Ledger.FmtShort(sess.PayNow())} for the time you've done ({sess.EarlyPct}% rate) instead of {Ledger.FmtShort(sess.FullPay)} for finishing. End it?",
+                            "Unrot", MessageBoxButtons.YesNo) == DialogResult.Yes)
+                        Finish(sess, long.MaxValue);
+                }, GameButton.Kind.Danger, "stop"));
             }
             return;
         }
@@ -429,6 +473,17 @@ public class MainForm : Form
             tiles.Controls.Add(Btn($"{m} min · +{(int)Math.Round(m / st.FocusRatio)}m",
                 () => { _app.StartFocus(m); Rebuild(); }, m == 25 ? GameButton.Kind.Primary : GameButton.Kind.Secondary, null, tw));
         }
+        var custom = Btn("Custom length", () =>
+        {
+            var ratio = Rules.Current().FocusRatio;
+            var m = Prompt.Slider("Custom lock-in", "Any length from 25 minutes up to 8 hours. Arrow keys move it a minute at a time.",
+                480, 120, "Lock in", v => $"{Prompt.MinText(v)} → +{Ledger.FmtShort((long)(v * 60L / ratio))}", minMin: 25);
+            if (m == null) return;
+            _app.StartFocus(m.Value);
+            Rebuild();
+        }, GameButton.Kind.Secondary, "tune", c.Inner);
+        custom.Margin = new Padding(0, 4, 0, 8);
+        c.Controls.Add(custom);
         c.Controls.Add(Btn($"Free lock-in · stop anytime · {Ledger.FmtRatio(st.FreeRatio)}:1", () => { _app.StartFree(); Rebuild(); },
             GameButton.Kind.Success, "play_arrow", c.Inner));
         c.Controls.Add(L($"End a timed one early for {st.EarlyEndPct}% pay. Keep your phone screen off for a bonus.", 9, Theme.Muted, false, c.Inner));
