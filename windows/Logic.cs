@@ -7,7 +7,7 @@ namespace Unrot;
 public static class Ledger
 {
     public record Remote(string Id, string Name, long Earned, long Spent, long FocusUntil, bool FocusFree,
-        string DoomDay, long DoomSec, string DoomPrevDay, long DoomPrevSec)
+        string DoomDay, long DoomSec, string DoomPrevDay, long DoomPrevSec, double RateNow = 0, long Updated = 0)
     {
         public long DoomOn(string day) => day == DoomDay ? DoomSec : day == DoomPrevDay ? DoomPrevSec : 0;
     }
@@ -32,7 +32,9 @@ public static class Ledger
                         Num(p.Value, "spent"), Num(p.Value, "focusUntil"),
                         p.Value.TryGetProperty("focusFree", out var ff) && ff.ValueKind == JsonValueKind.True,
                         Str(p.Value, "doomDay", ""), Num(p.Value, "doomSec"),
-                        Str(p.Value, "doomPrevDay", ""), Num(p.Value, "doomPrevSec")));
+                        Str(p.Value, "doomPrevDay", ""), Num(p.Value, "doomPrevSec"),
+                        p.Value.TryGetProperty("rateNow", out var rn) && rn.ValueKind == JsonValueKind.Number ? rn.GetDouble() : 0,
+                        Num(p.Value, "updated")));
                 }
             }
         }
@@ -104,6 +106,9 @@ public static class Ledger
         var t = Today;
         return (Store.S.DoomDay == t ? Store.S.DoomSec : 0) + Remotes().Sum(r => r.DoomOn(t));
     }
+
+    /// <summary>How fast the phone is spending right now (if it synced in the last 75 seconds).</summary>
+    public static double PhoneRate => Remotes().Where(r => Store.Now - r.Updated < 75_000).Select(r => r.RateNow).DefaultIfEmpty(0).Max();
 
     public static bool RemoteFocusFree => Remotes().Any(r => r.FocusUntil > Store.Now && r.FocusFree);
 

@@ -30,6 +30,9 @@ import java.time.LocalTime
 class UnrotService : AccessibilityService() {
 
     companion object {
+        /** How fast your balance is going down right now on this phone (shared with the laptop). */
+        @Volatile var currentRate = 0.0
+
         @Volatile var running = false
             private set
 
@@ -91,6 +94,7 @@ class UnrotService : AccessibilityService() {
     /** Last site each browser was on (null = not a blocked site). Survives fullscreen and picture-in-picture. */
     private val siteMemory = HashMap<String, String?>()
     private var lastPipDismiss = 0L
+    private var lastSyncedRate = 0.0
     private var lastUrlCheck = 0L
     private var spendAcc = 0.0
     private var pillParams: WindowManager.LayoutParams? = null
@@ -222,9 +226,14 @@ class UnrotService : AccessibilityService() {
     }
 
     private fun readSite(pkg: String, st: Settings): Pair<Boolean, String?> {
-        val id = URL_BAR_IDS[pkg] ?: return false to null
         val root = runCatching { rootInActiveWindow }.getOrNull() ?: return false to null
         if (root.packageName?.toString() != pkg) return false to null
+        return readSiteFrom(root, pkg, st)
+    }
+
+    /** Reads a browser's address bar inside a given window. Returns (could read it, blocked site or null). */
+    private fun readSiteFrom(root: android.view.accessibility.AccessibilityNodeInfo, pkg: String, st: Settings): Pair<Boolean, String?> {
+        val id = URL_BAR_IDS[pkg] ?: return false to null
         val node = runCatching { root.findAccessibilityNodeInfosByViewId(id) }.getOrNull()?.firstOrNull()
             ?: return false to null
         if (node.isFocused) return false to null // You're typing in it, not on a page.
@@ -288,46 +297,57 @@ class UnrotService : AccessibilityService() {
             }
         }
 
-        var key = currentKey()
-        var pip: android.graphics.Rect? = null
-        if ((key == null || !isBlocked(key, st)) && isScreenUsable()) {
-            // Nothing blocked in front, but a blocked app or site may be playing in a picture-in-picture window.
-            pipBlocked(st)?.let { (k, bounds) -> key = k; pip = bounds }
-        }
-        val usingFlagged = key != null && isBlocked(key!!, st) && isScreenUsable()
+        // Everything blocked that's actually visible: the app you're in, the other half of a split screen,
+        // and picture-in-picture. Doomscrolling costs 1x however many windows; games/movies add the engaging rate.
+        val usable = isScreenUsable()
+        val primary = currentKey()?.takeIf { usable && isBlocked(it, st) }
+        val others = if (usable) otherVisibleBlocked(st, primary) else emptyList()
+        val visible = listOfNotNull(primary) + others.map { it.key }
+        val pct = st.n("engagingCostPct") / 100.0
 
-        if (usingFlagged) {
-            // Games and movies cost less than doomscrolling.
-            val half = key!! in st.halfRate
-            spendAcc += if (half) st.n("engagingCostPct") / 100.0 else 1.0
-            if (half) Ledger.addAppTime(key, 1) else Ledger.addDoom(s, 1, key)
+        if (visible.isNotEmpty()) {
+            val doomKey = visible.firstOrNull { it !in st.halfRate }
+            val halfKey = visible.firstOrNull { it in st.halfRate }
+            currentRate = (if (doomKey != null) 1.0 else 0.0) + (if (halfKey != null) pct else 0.0)
+            spendAcc += currentRate
+            if (doomKey != null) Ledger.addDoom(s, 1, doomKey)
+            if (halfKey != null) Ledger.addAppTime(halfKey, 1)
             val whole = spendAcc.toLong()
             if (whole > 0) {
                 Ledger.spend(s, whole)
                 spendAcc -= whole
             }
-            lastInApp[key] = now
-            if (now - lastFlaggedAt > 60_000) {
-                continuousSec = 0
-                nextCheckInAt = if (st.checkInMin > 0) st.checkInMin * 60L else Long.MAX_VALUE
+            visible.forEach { lastInApp[it] = now }
+            val shown = primary ?: visible.first()
+            if (primary != null) {
+                if (now - lastFlaggedAt > 60_000) {
+                    continuousSec = 0
+                    nextCheckInAt = if (st.checkInMin > 0) st.checkInMin * 60L else Long.MAX_VALUE
+                }
+                lastFlaggedAt = now
+                continuousSec++
+                if (checkInAck) {
+                    checkInAck = false
+                    nextCheckInAt = continuousSec + (if (st.checkInMin > 0) st.checkInMin * 60L else Long.MAX_VALUE / 2)
+                }
             }
-            lastFlaggedAt = now
-            continuousSec++
-            if (checkInAck) {
-                checkInAck = false
-                nextCheckInAt = continuousSec + (if (st.checkInMin > 0) st.checkInMin * 60L else Long.MAX_VALUE / 2)
-            }
-            val bal = Ledger.availableSec(s, st, key)
+            val bal = Ledger.availableSec(s, st, shown)
             if (bal in 1..60 && !warnedLow) {
                 warnedLow = true
                 Notif.alert(this, "1 minute left", "Wrap it up, or lock in to earn more.")
             }
             if (bal > 120) warnedLow = false
-            updatePill(st, key!!)
-            val pipBounds = pip
-            if (pipBounds != null) evaluatePip(key!!, st, pipBounds) else evaluate(key!!, st)
+            updatePill(st, shown)
+            if (primary != null) evaluate(primary, st)
+            others.forEach { evaluateOther(it, st) }
         } else {
+            currentRate = 0.0
             hidePill()
+        }
+        // Let the laptop know quickly when what you're doing here changes (for the shared 1.5x cap).
+        if (currentRate != lastSyncedRate) {
+            lastSyncedRate = currentRate
+            syncSoon()
         }
 
         if (ticks % 10 == 0L) {
@@ -430,48 +450,67 @@ class UnrotService : AccessibilityService() {
         launchBlock(mode, pkg)
     }
 
-    /** A blocked app/site playing in a picture-in-picture window, and where that window is. */
-    private fun pipBlocked(st: Settings): Pair<String, android.graphics.Rect>? {
-        val ws = runCatching { windows }.getOrNull() ?: return null
+    data class Other(val key: String, val bounds: android.graphics.Rect, val pip: Boolean)
+
+    /**
+     * Blocked apps/sites visible outside the window you're using: the other half of a split screen,
+     * or a picture-in-picture video.
+     */
+    private fun otherVisibleBlocked(st: Settings, primary: String?): List<Other> {
+        val ws = runCatching { windows }.getOrNull() ?: return emptyList()
+        val out = mutableListOf<Other>()
         for (w in ws) {
-            if (!w.isInPictureInPictureMode) continue
-            val p = runCatching { w.root?.packageName?.toString() }.getOrNull() ?: continue
-            val key = if (p in URL_BAR_IDS) siteMemory[p]?.let { "site:$it" } ?: continue else p
-            if (!isBlocked(key, st)) continue
+            if (w.type != android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION) continue
+            if (w.isActive && !w.isInPictureInPictureMode) continue // the window you're using: handled as "primary"
+            val root = runCatching { w.root }.getOrNull() ?: continue
+            val p = root.packageName?.toString() ?: continue
+            if (p == packageName) continue
+            val key = if (p in URL_BAR_IDS) {
+                val (found, site) = readSiteFrom(root, p, st)
+                if (found) siteMemory[p] = site
+                (if (found) site else siteMemory[p])?.let { "site:$it" } ?: continue
+            } else p
+            if (key == primary || !isBlocked(key, st) || out.any { it.key == key }) continue
             val r = android.graphics.Rect()
             w.getBoundsInScreen(r)
-            return key to r
+            out += Other(key, r, w.isInPictureInPictureMode)
         }
-        return null
+        return out
     }
 
     /**
-     * Picture-in-picture only gets the hard stops (out of time, locked in, daily limit), not the nudges.
-     * The little window is swiped away (drag to the dismiss target at the bottom) and the block screen shows.
+     * Split screen and picture-in-picture only get the hard stops (out of time, locked in, daily limit),
+     * not the nudges. Picture-in-picture is swiped away; split screen is closed by going home.
      */
-    private fun evaluatePip(key: String, st: Settings, bounds: android.graphics.Rect) {
+    private fun evaluateOther(o: Other, st: Settings) {
         val mode = when {
             Ledger.focusActive(s) -> BlockActivity.MODE_FOCUS
             Ledger.balanceSec(s) <= 0 -> BlockActivity.MODE_OUT
-            key !in st.halfRate && Ledger.doomToday(s) >= st.n("dailyCapMin") * 60L -> BlockActivity.MODE_CAP
+            o.key !in st.halfRate && Ledger.doomToday(s) >= st.n("dailyCapMin") * 60L -> BlockActivity.MODE_CAP
             else -> null
         } ?: return
         val now = System.currentTimeMillis()
         if (now - lastPipDismiss < 4000) return
         lastPipDismiss = now
-        runCatching {
-            val dm = resources.displayMetrics
-            val path = android.graphics.Path().apply {
-                moveTo(bounds.exactCenterX(), bounds.exactCenterY())
-                lineTo(dm.widthPixels / 2f, dm.heightPixels - dp(48).toFloat())
+        val what = if (o.key.startsWith("site:")) o.key.removePrefix("site:") else "app"
+        if (o.pip) {
+            runCatching {
+                val dm = resources.displayMetrics
+                val path = android.graphics.Path().apply {
+                    moveTo(o.bounds.exactCenterX(), o.bounds.exactCenterY())
+                    lineTo(dm.widthPixels / 2f, dm.heightPixels - dp(48).toFloat())
+                }
+                val g = android.accessibilityservice.GestureDescription.Builder()
+                    .addStroke(android.accessibilityservice.GestureDescription.StrokeDescription(path, 0, 650))
+                    .build()
+                dispatchGesture(g, null, null)
             }
-            val g = android.accessibilityservice.GestureDescription.Builder()
-                .addStroke(android.accessibilityservice.GestureDescription.StrokeDescription(path, 0, 650))
-                .build()
-            dispatchGesture(g, null, null)
+            s.log("Closed a picture-in-picture $what")
+        } else {
+            performGlobalAction(GLOBAL_ACTION_HOME)
+            s.log("Closed a split-screen $what")
         }
-        s.log("Closed a picture-in-picture ${if (key.startsWith("site:")) key.removePrefix("site:") else "video"}")
-        h.postDelayed({ launchBlock(mode, key) }, 900)
+        h.postDelayed({ launchBlock(mode, o.key) }, 900)
     }
 
     private fun launchBlock(mode: String, pkg: String) {

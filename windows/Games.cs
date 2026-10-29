@@ -221,16 +221,21 @@ public static class Games
     [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr hWnd, int index);
     [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr hWnd, int attr, out int value, int size);
 
+    static List<IntPtr> _shownCache;
+    static long _shownAt;
+
     /// <summary>
-    /// What's actually showing: the window you're focused on, plus the main window on every monitor
-    /// (the top-most one covering at least half of that screen). Small windows on top, click-through
-    /// overlays and minimized windows don't count. So a game on your second screen still counts while you
-    /// click around on the first.
+    /// Every window that's actually visible on any screen, any size (top-most first), plus the one you're
+    /// focused on. Windows fully hidden behind others, minimized ones, tool windows and click-through
+    /// overlays don't count. A window counts if at least 160×120 pixels of it can be seen.
     /// </summary>
     public static List<IntPtr> ShownWindows()
     {
-        var screens = Screen.AllScreens;
-        var found = new Dictionary<string, IntPtr>();
+        if (_shownCache != null && Math.Abs(Store.Now - _shownAt) < 500) return _shownCache;
+        var list = new List<IntPtr>();
+        using var covered = new Region();
+        covered.MakeEmpty();
+        using var m = new System.Drawing.Drawing2D.Matrix();
         EnumWindows((h, _) =>
         {
             try
@@ -240,21 +245,22 @@ public static class Games
                 var ex = GetWindowLong(h, -20 /* GWL_EXSTYLE */);
                 if ((ex & 0x80 /* TOOLWINDOW */) != 0 || (ex & 0x20 /* TRANSPARENT */) != 0) return true;
                 if (!GetWindowRect(h, out var r)) return true;
-                foreach (var sc in screens)
-                {
-                    if (found.ContainsKey(sc.DeviceName)) continue;
-                    var b = sc.Bounds;
-                    long w = Math.Min(r.Right, b.Right) - Math.Max(r.Left, b.Left);
-                    long hh = Math.Min(r.Bottom, b.Bottom) - Math.Max(r.Top, b.Top);
-                    if (w > 0 && hh > 0 && w * hh * 2 >= (long)b.Width * b.Height) found[sc.DeviceName] = h;
-                }
-                return found.Count < screens.Length;
+                var rect = Rectangle.FromLTRB(r.Left, r.Top, r.Right, r.Bottom);
+                if (rect.Width < 50 || rect.Height < 50) return true;
+                using var vis = new Region(rect);
+                vis.Exclude(covered);
+                long area = 0;
+                foreach (var sc in vis.GetRegionScans(m)) area += (long)(sc.Width * sc.Height);
+                if (area >= 160 * 120) list.Add(h);
+                covered.Union(rect);
             }
-            catch { return true; }
+            catch { }
+            return true;
         }, IntPtr.Zero);
-        var list = found.Values.Distinct().ToList();
         var fg = GetForegroundWindow();
         if (fg != IntPtr.Zero && !list.Contains(fg)) list.Insert(0, fg);
+        _shownCache = list;
+        _shownAt = Store.Now;
         return list;
     }
 
@@ -293,8 +299,13 @@ public static class Games
     }
 
     /// <summary>A blocked site showing in a browser on any screen (or focused), if any.</summary>
-    public static (IntPtr Hwnd, BlockedSite Site)? ForegroundSite()
+    public static (IntPtr Hwnd, BlockedSite Site)? ForegroundSite() =>
+        VisibleSites().Select(x => ((IntPtr, BlockedSite)?)x).FirstOrDefault();
+
+    /// <summary>Every blocked site showing in a visible browser window (one per window: its active tab).</summary>
+    public static List<(IntPtr Hwnd, BlockedSite Site)> VisibleSites()
     {
+        var found = new List<(IntPtr, BlockedSite)>();
         foreach (var hwnd in ShownWindows())
         {
             GetWindowThreadProcessId(hwnd, out var pid);
@@ -308,10 +319,14 @@ public static class Games
             foreach (var site in Store.S.Settings.Sites)
             {
                 var keys = (site.Keywords ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries);
-                if (keys.Any(k => title.Contains(k, StringComparison.OrdinalIgnoreCase))) return (hwnd, site);
+                if (keys.Any(k => title.Contains(k, StringComparison.OrdinalIgnoreCase)))
+                {
+                    found.Add((hwnd, site));
+                    break;
+                }
             }
         }
-        return null;
+        return found;
     }
 
     /// <summary>Closes the browser tab that's showing a blocked site (Ctrl+W).</summary>

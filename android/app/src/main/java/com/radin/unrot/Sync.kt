@@ -34,6 +34,7 @@ object Sync {
                 .put("doomSec", s.doomSec)
                 .put("doomPrevDay", s.doomPrevDay)
                 .put("doomPrevSec", s.doomPrevSec)
+                .put("rateNow", UnrotService.currentRate)
                 .put("updated", System.currentTimeMillis())
             http("PUT", base(s) + "/devices/" + s.deviceId + ".json", mine.toString())
             val all = http("GET", base(s) + "/devices.json", null)

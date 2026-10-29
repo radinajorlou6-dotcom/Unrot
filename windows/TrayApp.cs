@@ -143,26 +143,32 @@ public class TrayApp : ApplicationContext
             if (fgName != null) Store.AddLog("Playing " + fgName);
             _lastGame = fgName;
         }
-        // A game and a blocked site can both be showing (e.g. one per screen): both cost time.
-        var site = Games.ForegroundSite();
+        // Everything visible counts, but each kind only once: doomscrolling (any number of social windows) 1x,
+        // games/movies the engaging rate. Shared with the phone: together they never pass 1 + that rate (1.5x).
+        var sites = Games.VisibleSites();
+        (IntPtr Hwnd, BlockedSite Site)? social = sites.Where(x => !x.Site.Half).Select(x => ((IntPtr, BlockedSite)?)x).FirstOrDefault();
+        (IntPtr Hwnd, BlockedSite Site)? movie = sites.Where(x => x.Site.Half).Select(x => ((IntPtr, BlockedSite)?)x).FirstOrDefault();
+        var site = social ?? movie;
         var blocking = _block != null && !_block.IsDisposed;
         var showing = fg != null || site != null;
         if (showing && !blocking)
         {
-            // Games and movie sites cost less than doomscrolling; overtime costs the payback multiplier.
             var pct = st.EngagingCostPct / 100.0;
-            double rate = 0;
-            if (fg != null) rate += Ledger.OvertimeActive ? pct * st.PaybackMult : pct;
-            if (site != null) rate += site.Value.Site.Half ? pct : 1.0;
+            double engaging = fg != null || movie != null ? pct : 0;
+            if (fg != null && Ledger.OvertimeActive) engaging *= st.PaybackMult;
+            double rate = engaging + (social != null ? 1.0 : 0);
+            var phone = Ledger.PhoneRate;
+            rate = Math.Min(rate, Math.Max(0, 1 + pct - phone));
             _spendAcc += rate;
             var whole = (long)_spendAcc;
             if (whole > 0) { Ledger.Spend(whole); _spendAcc -= whole; }
-            var socialSite = site != null && !site.Value.Site.Half;
-            if (socialSite) Ledger.AddDoom(1);
+            // The phone already counts doomscrolling toward the daily limit if it's doing it too.
+            if (social != null && phone < 1) Ledger.AddDoom(1);
             Ledger.Stat(d =>
             {
                 if (fg != null) d.Game++;
-                if (site != null) { if (socialSite) d.Doom++; else d.Movie++; }
+                if (social != null) d.Doom++;
+                else if (movie != null) d.Movie++;
             });
             if (fg != null && Ledger.Balance() > 0) _lastPositivePlaying = Store.Now;
         }
