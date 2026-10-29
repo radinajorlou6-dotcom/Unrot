@@ -143,20 +143,27 @@ public class TrayApp : ApplicationContext
             if (fgName != null) Store.AddLog("Playing " + fgName);
             _lastGame = fgName;
         }
-        var site = fg == null ? Games.ForegroundSite() : null;
+        // A game and a blocked site can both be showing (e.g. one per screen): both cost time.
+        var site = Games.ForegroundSite();
         var blocking = _block != null && !_block.IsDisposed;
         var showing = fg != null || site != null;
         if (showing && !blocking)
         {
             // Games and movie sites cost less than doomscrolling; overtime costs the payback multiplier.
-            var half = fg != null || site.Value.Site.Half;
-            var rate = half ? st.EngagingCostPct / 100.0 : 1.0;
-            if (fg != null && Ledger.OvertimeActive) rate *= st.PaybackMult;
+            var pct = st.EngagingCostPct / 100.0;
+            double rate = 0;
+            if (fg != null) rate += Ledger.OvertimeActive ? pct * st.PaybackMult : pct;
+            if (site != null) rate += site.Value.Site.Half ? pct : 1.0;
             _spendAcc += rate;
             var whole = (long)_spendAcc;
             if (whole > 0) { Ledger.Spend(whole); _spendAcc -= whole; }
-            if (!half) Ledger.AddDoom(1);
-            Ledger.Stat(d => { if (fg != null) d.Game++; else if (half) d.Movie++; else d.Doom++; });
+            var socialSite = site != null && !site.Value.Site.Half;
+            if (socialSite) Ledger.AddDoom(1);
+            Ledger.Stat(d =>
+            {
+                if (fg != null) d.Game++;
+                if (site != null) { if (socialSite) d.Doom++; else d.Movie++; }
+            });
             if (fg != null && Ledger.Balance() > 0) _lastPositivePlaying = Store.Now;
         }
         if (fg != null) _lastGameSeen = Store.Now;
@@ -251,18 +258,18 @@ public class TrayApp : ApplicationContext
         var focus = Ledger.FocusActive;
         var bal = Ledger.Balance();
         var capHit = site != null && !site.Value.Site.Half && Ledger.DoomToday() >= st.DailyCapMin * 60L;
-        var allowed = gameInFront ? !focus && (bal > 0 || Ledger.OvertimeActive)
-            : site != null ? !focus && bal > 0 && !capHit
-            : true;
+        // Overtime only covers the game, not a site next to it.
+        var blockGame = gameInFront && !(!focus && (bal > 0 || Ledger.OvertimeActive));
+        var blockSite = site != null && !(!focus && bal > 0 && !capHit);
 
-        if (allowed)
+        if (!blockGame && !blockSite)
         {
             if (_block != null && !_block.IsDisposed && !_block.Finished) _block.Close();
             return;
         }
         if (_block != null && !_block.IsDisposed) return;
 
-        if (!gameInFront)
+        if (!blockGame)
         {
             var s = site.Value;
             var cap = st.DailyCapMin >= 60 ? $"{st.DailyCapMin / 60}h{(st.DailyCapMin % 60 > 0 ? $" {st.DailyCapMin % 60}m" : "")}" : $"{st.DailyCapMin} min";
