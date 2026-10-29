@@ -88,6 +88,9 @@ class UnrotService : AccessibilityService() {
     private var bgBusy = false
     private var pill: TextView? = null
     private var currentSite: String? = null
+    /** Last site each browser was on (null = not a blocked site). Survives fullscreen and picture-in-picture. */
+    private val siteMemory = HashMap<String, String?>()
+    private var lastPipDismiss = 0L
     private var lastUrlCheck = 0L
     private var spendAcc = 0.0
     private var pillParams: WindowManager.LayoutParams? = null
@@ -171,7 +174,9 @@ class UnrotService : AccessibilityService() {
     /** Called whenever a different app comes to the front. */
     private fun onForeground(pkg: String) {
         currentPkg = pkg
-        currentSite = null
+        // Fullscreen video and picture-in-picture hide the address bar, so start from the last site
+        // this browser was on; reading the address bar (when visible) corrects it.
+        currentSite = siteMemory[pkg]
         if (pkg in URL_BAR_IDS) refreshSite(notify = false)
         onKeyChanged()
     }
@@ -209,6 +214,7 @@ class UnrotService : AccessibilityService() {
         val st = Rules.current(s)
         val (found, site) = readSite(pkg, st)
         if (!found) return // Address bar hidden (e.g. fullscreen video): keep what we had.
+        siteMemory[pkg] = site
         if (site != currentSite) {
             currentSite = site
             if (notify) onKeyChanged()
@@ -282,8 +288,13 @@ class UnrotService : AccessibilityService() {
             }
         }
 
-        val key = currentKey()
-        val usingFlagged = key != null && isBlocked(key, st) && isScreenUsable()
+        var key = currentKey()
+        var pip: android.graphics.Rect? = null
+        if ((key == null || !isBlocked(key, st)) && isScreenUsable()) {
+            // Nothing blocked in front, but a blocked app or site may be playing in a picture-in-picture window.
+            pipBlocked(st)?.let { (k, bounds) -> key = k; pip = bounds }
+        }
+        val usingFlagged = key != null && isBlocked(key!!, st) && isScreenUsable()
 
         if (usingFlagged) {
             // Games and movies cost less than doomscrolling.
@@ -312,8 +323,9 @@ class UnrotService : AccessibilityService() {
                 Notif.alert(this, "1 minute left", "Wrap it up, or lock in to earn more.")
             }
             if (bal > 120) warnedLow = false
-            updatePill(st, key)
-            evaluate(key, st)
+            updatePill(st, key!!)
+            val pipBounds = pip
+            if (pipBounds != null) evaluatePip(key!!, st, pipBounds) else evaluate(key!!, st)
         } else {
             hidePill()
         }
@@ -412,10 +424,54 @@ class UnrotService : AccessibilityService() {
             st.inBedtime(LocalTime.now().let { it.hour * 60 + it.minute }) &&
                 (nightPass[pkg] ?: 0L) < now -> BlockActivity.MODE_NIGHT
             introPending == pkg -> BlockActivity.MODE_INTRO
-            continuousSec >= nextCheckInAt -> BlockActivity.MODE_CHECKIN
+            continuousSec >= nextCheckInAt && pkg !in st.halfRate -> BlockActivity.MODE_CHECKIN
             else -> null
         } ?: return
         launchBlock(mode, pkg)
+    }
+
+    /** A blocked app/site playing in a picture-in-picture window, and where that window is. */
+    private fun pipBlocked(st: Settings): Pair<String, android.graphics.Rect>? {
+        val ws = runCatching { windows }.getOrNull() ?: return null
+        for (w in ws) {
+            if (!w.isInPictureInPictureMode) continue
+            val p = runCatching { w.root?.packageName?.toString() }.getOrNull() ?: continue
+            val key = if (p in URL_BAR_IDS) siteMemory[p]?.let { "site:$it" } ?: continue else p
+            if (!isBlocked(key, st)) continue
+            val r = android.graphics.Rect()
+            w.getBoundsInScreen(r)
+            return key to r
+        }
+        return null
+    }
+
+    /**
+     * Picture-in-picture only gets the hard stops (out of time, locked in, daily limit), not the nudges.
+     * The little window is swiped away (drag to the dismiss target at the bottom) and the block screen shows.
+     */
+    private fun evaluatePip(key: String, st: Settings, bounds: android.graphics.Rect) {
+        val mode = when {
+            Ledger.focusActive(s) -> BlockActivity.MODE_FOCUS
+            Ledger.balanceSec(s) <= 0 -> BlockActivity.MODE_OUT
+            key !in st.halfRate && Ledger.doomToday(s) >= st.n("dailyCapMin") * 60L -> BlockActivity.MODE_CAP
+            else -> null
+        } ?: return
+        val now = System.currentTimeMillis()
+        if (now - lastPipDismiss < 4000) return
+        lastPipDismiss = now
+        runCatching {
+            val dm = resources.displayMetrics
+            val path = android.graphics.Path().apply {
+                moveTo(bounds.exactCenterX(), bounds.exactCenterY())
+                lineTo(dm.widthPixels / 2f, dm.heightPixels - dp(48).toFloat())
+            }
+            val g = android.accessibilityservice.GestureDescription.Builder()
+                .addStroke(android.accessibilityservice.GestureDescription.StrokeDescription(path, 0, 650))
+                .build()
+            dispatchGesture(g, null, null)
+        }
+        s.log("Closed a picture-in-picture ${if (key.startsWith("site:")) key.removePrefix("site:") else "video"}")
+        h.postDelayed({ launchBlock(mode, key) }, 900)
     }
 
     private fun launchBlock(mode: String, pkg: String) {
