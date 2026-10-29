@@ -125,7 +125,15 @@ public class TrayApp : ApplicationContext
 
         Rules.Current();
         var earned = Ledger.SettleFocus();
-        if (earned >= 0)
+        if (earned == Ledger.NeedsReview)
+        {
+            Balloon($"Free lock-in hit {Ledger.FreeMaxMs / 3_600_000} hours",
+                "Forgot it was on? Open Unrot and say how long you really worked to get paid.");
+            Store.Save();
+            _ = SyncNow();
+            _main?.Rebuild();
+        }
+        else if (earned >= 0)
         {
             Balloon("Lock-in complete 🎉", $"+{Ledger.FmtShort(earned)} of time.");
             _ = SyncNow();
@@ -443,6 +451,60 @@ public class BlockForm : Form
 /// <summary>Tiny input box.</summary>
 public static class Prompt
 {
+    /// <summary>
+    /// A minutes slider with a live line above it. Returns the chosen minutes, or null if cancelled.
+    /// Arrow keys move it one minute at a time.
+    /// </summary>
+    public static int? Slider(string title, string message, int maxMin, int startMin, string confirm, Func<int, string> describe)
+    {
+        using var f = new Form
+        {
+            Text = title,
+            ClientSize = new Size(460, 220),
+            StartPosition = FormStartPosition.CenterScreen,
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            MaximizeBox = false,
+            MinimizeBox = false,
+            BackColor = Theme.Card,
+            ForeColor = Theme.Text,
+            TopMost = true,
+        };
+        var msg = new Label { Text = message, Left = 18, Top = 14, Width = 424, Height = 56, ForeColor = Theme.Muted, Font = Theme.Body(10) };
+        var value = new Label
+        {
+            Left = 18, Top = 74, Width = 424, Height = 36, ForeColor = Theme.Gold, Font = Theme.Display(17),
+            TextAlign = ContentAlignment.MiddleCenter, Text = describe(startMin),
+        };
+        var bar = new TrackBar
+        {
+            Left = 14, Top = 114, Width = 432, Minimum = 0, Maximum = Math.Max(1, maxMin),
+            TickStyle = TickStyle.None, SmallChange = 1, LargeChange = Math.Max(1, maxMin / 12), BackColor = Theme.Card,
+        };
+        bar.Value = Math.Clamp(startMin, 0, bar.Maximum);
+        bar.ValueChanged += (_, _) => value.Text = describe(bar.Value);
+        var ok = new Button { Text = confirm, Left = 236, Top = 170, Width = 120, Height = 32, DialogResult = DialogResult.OK, FlatStyle = FlatStyle.Flat, BackColor = Theme.Violet, ForeColor = Color.White };
+        var cancel = new Button { Text = "Cancel", Left = 362, Top = 170, Width = 80, Height = 32, DialogResult = DialogResult.Cancel, FlatStyle = FlatStyle.Flat };
+        f.Controls.AddRange(new Control[] { msg, value, bar, ok, cancel });
+        f.AcceptButton = ok;
+        f.CancelButton = cancel;
+        f.Shown += (_, _) => bar.Focus();
+        return f.ShowDialog() == DialogResult.OK ? bar.Value : null;
+    }
+
+    public static string MinText(long min) =>
+        min >= 60 && min % 60 == 0 ? $"{min / 60} h" : min >= 60 ? $"{min / 60} h {min % 60} min" : $"{min} min";
+
+    /// <summary>"How long did you really work?" for a free lock-in that ran <paramref name="ranSec"/>. Returns seconds to keep, or null.</summary>
+    public static long? Worked(string title, string message, long ranSec, string confirm)
+    {
+        var ranMin = (int)(ranSec / 60);
+        var ratio = Rules.Current().FreeRatio;
+        var m = Slider(title, message, ranMin, ranMin, confirm,
+            v => $"Worked {MinText(v)} → +{Ledger.FmtShort((long)(v * 60L / ratio))}");
+        if (m == null) return null;
+        return m >= ranMin ? ranSec : m.Value * 60L;
+    }
+
     public static string Ask(string title, string label, bool password = false, string initial = "")
     {
         using var f = new Form

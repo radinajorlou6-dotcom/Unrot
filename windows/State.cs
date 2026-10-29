@@ -101,6 +101,8 @@ public class AppState
     public bool IdleRefundDone { get; set; }
     public bool FocusFree { get; set; }
     public long FocusStart { get; set; }
+    /// <summary>A free lock-in that hit the max on its own: seconds it ran, unpaid until you say how much was real.</summary>
+    public long FreeReviewSec { get; set; }
     public string DoomDay { get; set; } = "";
     public long DoomSec { get; set; }
     public string DoomPrevDay { get; set; } = "";

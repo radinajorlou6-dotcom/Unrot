@@ -226,16 +226,70 @@ object Ledger {
 
     fun freePayout(s: Store, st: Settings): Long = (freeElapsedSec(s) / st.freeRatio).toLong()
 
-    /** Stops a free lock-in and pays for the time done. */
-    fun stopFree(s: Store, st: Settings): Long = synchronized(s.lock) {
+    /**
+     * Stops a free lock-in and pays for the time done, or only [keepSec] of it if you say part of it
+     * wasn't real (you forgot to stop it).
+     */
+    fun stopFree(s: Store, st: Settings, keepSec: Long = Long.MAX_VALUE): Long = synchronized(s.lock) {
         if (s.focusUntil == 0L || !s.focusFree) return 0
-        val done = freeElapsedSec(s)
-        val pay = freePayout(s, st)
+        val ran = freeElapsedSec(s)
+        val done = keepSec.coerceIn(0L, ran)
+        val pay = (done / st.freeRatio).toLong()
         clearFocus(s)
         stat("l", done)
         s.lastFocusPaid = pay
-        if (pay > 0) credit(s, st, pay, "free lock-in, ${done / 60} min") else s.log("Ended a free lock-in")
+        val trimmed = if (done < ran) " (trimmed from ${ran / 60} min)" else ""
+        if (pay > 0) credit(s, st, pay, "free lock-in, ${done / 60} min$trimmed") else s.log("Ended a free lock-in$trimmed")
         pay
+    }
+
+    /** Result of [settleFocus] when a free lock-in hit the max: nothing paid until you review it. */
+    const val NEEDS_REVIEW = -2L
+
+    /** A free lock-in that ran all the way to the max was almost certainly forgotten: park it unpaid. */
+    private fun parkFree(s: Store) {
+        val ran = freeElapsedSec(s)
+        clearFocus(s)
+        s.lastFocusPaid = 0
+        s.freeReviewBonus = false
+        s.freeReviewSec = s.freeReviewSec + ran
+        s.log("Free lock-in hit the ${FREE_MAX_MS / 3_600_000}-hour max. Unpaid until you say how long you really worked")
+    }
+
+    /** Pays a parked free lock-in for the [keepSec] you say were real. */
+    fun resolveFreeReview(s: Store, st: Settings, keepSec: Long): Long = synchronized(s.lock) {
+        val ran = s.freeReviewSec
+        if (ran <= 0) return 0
+        val kept = keepSec.coerceIn(0L, ran)
+        val bonusOwed = s.freeReviewBonus
+        s.freeReviewSec = 0
+        s.freeReviewBonus = false
+        stat("l", kept)
+        val pay = (kept / st.freeRatio).toLong()
+        if (pay <= 0) {
+            s.log("Free lock-in that hit the max: you kept 0 min")
+            return 0
+        }
+        var got = credit(s, st, pay, "free lock-in, ${kept / 60} min (you said, out of ${ran / 60})")
+        val pct = st.n("phoneDownPct")
+        if (bonusOwed && pct > 0) {
+            got += credit(s, st, pay * pct / 100, "phone-down bonus (+$pct%, screen stayed off)")
+            s.lifePhoneDown = s.lifePhoneDown + 1
+        }
+        got
+    }
+
+    /**
+     * Takes time off your balance on purpose, to keep yourself honest (e.g. a lock-in you forgot to stop).
+     * Never below zero, and it doesn't count as doomscrolling. Returns seconds removed.
+     */
+    fun giveBack(s: Store, sec: Long): Long = synchronized(s.lock) {
+        val take = min(sec, max(0L, balanceSec(s)))
+        if (take <= 0) return 0
+        s.earnedSec = s.earnedSec - take
+        stat("e", -take)
+        s.log("−${fmtShort(take)} · gave time back (keeping it honest)")
+        take
     }
 
     private fun clearFocus(s: Store) {
@@ -270,7 +324,10 @@ object Ledger {
     fun settleFocus(s: Store, st: Settings): Long = synchronized(s.lock) {
         val until = s.focusUntil
         if (until == 0L || System.currentTimeMillis() < until) return -1
-        if (s.focusFree) return stopFree(s, st)
+        if (s.focusFree) {
+            parkFree(s)
+            return NEEDS_REVIEW
+        }
         val planned = s.focusPlannedSec
         clearFocus(s)
         stat("l", planned)

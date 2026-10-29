@@ -151,16 +151,62 @@ public static class Ledger
 
     public static long FreePayout => (long)(FreeElapsedSec / Rules.Current().FreeRatio);
 
-    public static long StopFree()
+    /// <summary>
+    /// Stops a free lock-in and pays for the time done, or only <paramref name="keepSec"/> of it if part of it
+    /// wasn't real (you forgot to stop it).
+    /// </summary>
+    public static long StopFree(long keepSec = long.MaxValue)
     {
         if (Store.S.FocusUntil == 0 || !Store.S.FocusFree) return 0;
-        var done = FreeElapsedSec;
-        var pay = FreePayout;
+        var ran = FreeElapsedSec;
+        var done = Math.Clamp(keepSec, 0, ran);
+        var pay = (long)(done / Rules.Current().FreeRatio);
         ClearFocus();
         Stat(d => d.Locked += done);
-        if (pay > 0) Credit(pay, $"free lock-in, {done / 60} min");
-        else Store.AddLog("Ended a free lock-in");
-        return pay;
+        var trimmed = done < ran ? $" (trimmed from {ran / 60} min)" : "";
+        if (pay > 0) return Credit(pay, $"free lock-in, {done / 60} min{trimmed}");
+        Store.AddLog("Ended a free lock-in" + trimmed);
+        return 0;
+    }
+
+    /// <summary>What <see cref="SettleFocus"/> returns when a free lock-in hit the max: nothing paid until you review it.</summary>
+    public const long NeedsReview = -2;
+
+    /// <summary>A free lock-in that ran all the way to the max was almost certainly forgotten: park it unpaid.</summary>
+    static void ParkFree()
+    {
+        var ran = FreeElapsedSec;
+        ClearFocus();
+        Store.S.FreeReviewSec += ran;
+        Store.AddLog($"Free lock-in hit the {FreeMaxMs / 3_600_000}-hour max. Unpaid until you say how long you really worked");
+    }
+
+    /// <summary>Pays a parked free lock-in for the seconds you say were real.</summary>
+    public static long ResolveFreeReview(long keepSec)
+    {
+        var ran = Store.S.FreeReviewSec;
+        if (ran <= 0) return 0;
+        var kept = Math.Clamp(keepSec, 0, ran);
+        Store.S.FreeReviewSec = 0;
+        Stat(d => d.Locked += kept);
+        var pay = (long)(kept / Rules.Current().FreeRatio);
+        if (pay > 0) return Credit(pay, $"free lock-in, {kept / 60} min (you said, out of {ran / 60})");
+        Store.AddLog("Free lock-in that hit the max: you kept 0 min");
+        return 0;
+    }
+
+    /// <summary>
+    /// Takes time off your balance on purpose, to keep yourself honest (e.g. a lock-in you forgot to stop).
+    /// Never below zero, and it doesn't count as doomscrolling. Returns seconds removed.
+    /// </summary>
+    public static long GiveBack(long sec)
+    {
+        var take = Math.Min(sec, Math.Max(0, Balance()));
+        if (take <= 0) return 0;
+        Store.S.EarnedSec -= take;
+        Stat(d => d.Earned -= take);
+        Store.AddLog($"−{FmtShort(take)} · gave time back (keeping it honest)");
+        return take;
     }
 
     static void ClearFocus()
@@ -268,7 +314,7 @@ public static class Ledger
     public static long SettleFocus()
     {
         if (Store.S.FocusUntil == 0 || Store.Now < Store.S.FocusUntil) return -1;
-        if (Store.S.FocusFree) return StopFree();
+        if (Store.S.FocusFree) { ParkFree(); return NeedsReview; }
         var planned = Store.S.FocusPlannedSec;
         Stat(d => d.Locked += planned);
         Store.S.FocusUntil = 0;

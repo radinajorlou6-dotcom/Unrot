@@ -132,6 +132,14 @@ class Store private constructor(ctx: Context) {
     var focusStart: Long
         get() = long("focusStart")
         set(v) = putLong("focusStart", v)
+    /** A free lock-in that hit the max on its own: seconds it ran, unpaid until you say how much was real. */
+    var freeReviewSec: Long
+        get() = long("freeReviewSec")
+        set(v) = putLong("freeReviewSec", v)
+    /** That lock-in also kept the screen off (phone-down bonus owed on whatever you keep). */
+    var freeReviewBonus: Boolean
+        get() = p.getBoolean("freeReviewBonus", false)
+        set(v) = p.edit().putBoolean("freeReviewBonus", v).apply()
 
     // ---- Doomscrolling today (full-price apps/sites), for the daily cap and streaks ----
     var doomDay: String

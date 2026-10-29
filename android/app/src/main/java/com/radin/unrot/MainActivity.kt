@@ -352,6 +352,7 @@ class MainActivity : Activity() {
             root.add(c, 14)
         }
         crashCard(root)
+        freeReviewCard(root, st)
         heroCard(root, st)
         setupCompact(root)
         lockInCard(root, st)
@@ -386,7 +387,10 @@ class MainActivity : Activity() {
             b == 0L -> "Out of time. Lock in or hit a quest in Earn."
             else -> "Saved up, max ${st.maxBankMin / 60}h ${st.maxBankMin % 60}m".replace(" 0m", "")
         }
-        c.add(text(status, 14.5f, if (b <= 0) Col.WARN else Col.MUTED).apply { gravity = Gravity.CENTER }, 16)
+        c.add(text(status, 14.5f, if (b <= 0) Col.WARN else Col.MUTED).apply { gravity = Gravity.CENTER }, if (b > 0) 6 else 16)
+        if (b > 0) {
+            c.addWrap(button("Give time back", Ui.Style.GHOST, R.drawable.ic_favorite) { giveBackDialog() }, 12, Gravity.CENTER_HORIZONTAL)
+        }
 
         // Level / XP
         val xp = Game.xp(s)
@@ -454,10 +458,17 @@ class MainActivity : Activity() {
                 c.addWrap(pay, 10, Gravity.CENTER_HORIZONTAL)
                 c.add(text("Free lock-in at ${Rules.fmtRatio(st.freeRatio)}:1. Stop whenever; you're paid for every minute.", 14f, Col.MUTED).apply { gravity = Gravity.CENTER }, 12)
                 c.add(button("Stop & collect", Ui.Style.SUCCESS, R.drawable.ic_check_circle) {
-                    val got = Ledger.stopFree(s, Rules.current(s))
-                    syncNow()
-                    Toast.makeText(this@MainActivity, "+${Ledger.fmtShort(got)} 💪", Toast.LENGTH_LONG).show()
-                    render()
+                    val ran = Ledger.freeElapsedSec(s)
+                    workedDialog(
+                        "Stop & collect",
+                        "It's been running for ${minText(ran / 60)}. If you forgot to stop it, slide it down to the time you really worked.",
+                        ran, "Collect",
+                    ) { keep ->
+                        val got = Ledger.stopFree(s, Rules.current(s), keep)
+                        syncNow()
+                        Toast.makeText(this@MainActivity, "+${Ledger.fmtShort(got)} 💪", Toast.LENGTH_LONG).show()
+                        render()
+                    }
                 }, 0)
             } else if (Ledger.localFocusActive(s)) {
                 c.addWrap(chip("+${Ledger.fmtShort((s.focusPlannedSec / st.focusRatio).toLong())} when it ends", Col.ACCENT), 10, Gravity.CENTER_HORIZONTAL)
@@ -597,6 +608,105 @@ class MainActivity : Activity() {
         if (recent.isEmpty()) return
         val c = section(root, "First thing today", R.drawable.ic_sunny, Col.GOLD)
         recent.takeLast(3).forEach { c.add(text("• " + it.text, 16.5f), 4) }
+    }
+
+    // ------------------------------------------------------------------ keeping yourself honest
+
+    private fun minText(min: Long): String = when {
+        min >= 60 && min % 60 == 0L -> "${min / 60} h"
+        min >= 60 -> "${min / 60} h ${min % 60} min"
+        else -> "$min min"
+    }
+
+    /**
+     * A dialog with a minutes slider (plus −/+ for fine steps). [describe] turns the chosen minutes into the
+     * big line above the slider; [onConfirm] gets the chosen minutes.
+     */
+    private fun sliderDialog(
+        title: String, message: String, maxMin: Int, startMin: Int, confirm: String,
+        describe: (Int) -> String, onConfirm: (Int) -> Unit,
+    ) {
+        val ui = Ui(this)
+        val box = ui.col().apply { setPadding(dp(22), dp(6), dp(22), 0) }
+        box.add(ui.text(message, 14.5f, Col.MUTED), 16)
+        val value = ui.title(describe(startMin), 24f, Col.GOLD).apply { gravity = Gravity.CENTER }
+        box.add(value, 8)
+        val bar = android.widget.SeekBar(this).apply {
+            max = maxMin.coerceAtLeast(1)
+            progress = startMin.coerceIn(0, max)
+            val tint = android.content.res.ColorStateList.valueOf(Col.VIOLET)
+            progressTintList = tint
+            thumbTintList = tint
+            setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(b: android.widget.SeekBar?, p: Int, fromUser: Boolean) { value.text = describe(p) }
+                override fun onStartTrackingTouch(b: android.widget.SeekBar?) {}
+                override fun onStopTrackingTouch(b: android.widget.SeekBar?) {}
+            })
+        }
+        val r = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
+        fun stepper(label: String, d: Int) = ui.chip(label, Col.VIOLET).apply {
+            setPadding(dp(14), dp(6), dp(14), dp(6))
+            setOnClickListener { bar.progress = (bar.progress + d).coerceIn(0, bar.max) }
+        }
+        r.addView(stepper("−", -1))
+        r.addView(bar, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        r.addView(stepper("+", 1))
+        box.add(r, 4)
+        dialog().setTitle(title).setView(box)
+            .setPositiveButton(confirm) { _, _ -> onConfirm(bar.progress) }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    /** "How long did you really work?" for a free lock-in that ran [ranSec]. Gives back seconds to keep. */
+    private fun workedDialog(title: String, message: String, ranSec: Long, confirm: String, onKeep: (Long) -> Unit) {
+        val ranMin = (ranSec / 60).toInt()
+        val ratio = Rules.current(s).freeRatio
+        sliderDialog(
+            title, message, ranMin, ranMin, confirm,
+            describe = { m -> "Worked ${minText(m.toLong())} → +${Ledger.fmtShort((m * 60L / ratio).toLong())}" },
+        ) { m -> onKeep(if (m >= ranMin) ranSec else m * 60L) }
+    }
+
+    /** Remove any amount of your balance, to undo time you didn't really earn. */
+    private fun giveBackDialog() {
+        val bal = Ledger.balanceSec(s)
+        if (bal <= 0) return
+        val maxMin = (bal / 60).toInt().coerceAtLeast(1)
+        sliderDialog(
+            "Give time back",
+            "Earned something you didn't really earn, like a lock-in you forgot to stop? Take it off here. " +
+                "This can't be undone, and it doesn't count toward your daily limit.",
+            maxMin, 0, "Remove it",
+            describe = { m -> if (m == 0) "Slide to choose" else "−${minText(m.toLong())}" },
+        ) { m ->
+            if (m <= 0) return@sliderDialog
+            val took = Ledger.giveBack(s, if (m >= maxMin) bal else m * 60L)
+            syncNow()
+            Toast.makeText(this, "Removed ${Ledger.fmtShort(took)}. Respect. 🫡", Toast.LENGTH_LONG).show()
+            render()
+        }
+    }
+
+    /** A free lock-in that hit the max sits here, unpaid, until you say how long was real. */
+    private fun Ui.freeReviewCard(root: LinearLayout, st: Settings) {
+        val ran = s.freeReviewSec
+        if (ran <= 0) return
+        val c = card()
+        c.add(listRow(
+            R.drawable.ic_hourglass_top, Col.WARN, "Your free lock-in ran out",
+            "It hit the ${Ledger.FREE_MAX_MS / 3_600_000}-hour max, so it probably kept going after you stopped. " +
+                "Say how long you really worked to get paid.",
+        ), 12)
+        c.add(button("How long did I work?", Ui.Style.PRIMARY, R.drawable.ic_timer) {
+            workedDialog("Free lock-in", "It ran for ${minText(ran / 60)} in total.", ran, "Get paid") { keep ->
+                val got = Ledger.resolveFreeReview(s, Rules.current(s), keep)
+                syncNow()
+                Toast.makeText(this@MainActivity, if (got > 0) "+${Ledger.fmtShort(got)} 💪" else "Nothing added", Toast.LENGTH_LONG).show()
+                render()
+            }
+        }, 0)
+        root.add(c, 14)
     }
 
     private fun Ui.crashCard(root: LinearLayout) {

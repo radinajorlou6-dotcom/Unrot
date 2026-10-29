@@ -280,6 +280,8 @@ public class MainForm : Form
         var st = Rules.Current();
         PageTitle("Home", DateTime.Now.ToString("dddd, MMMM d", CultureInfo.CurrentCulture));
 
+        FreeReviewCard();
+
         // Hero: balance ring + what's going on.
         var hero = NewCard();
         var hr = Row(hero, hero.Inner);
@@ -292,6 +294,12 @@ public class MainForm : Form
         info.Controls.Add(L(bal > 0 ? "Shared with your phone if synced." :
             bal < 0 ? $"You owe {Ledger.FmtShort(-bal)} from overtime. What you earn next pays it back first." :
             "Out of time. Lock in to earn more.", 11, bal <= 0 ? Theme.Warn : Theme.Muted, false, hero.Inner - 230));
+        if (bal > 0)
+        {
+            var gb = Btn("Give time back", GiveBack, GameButton.Kind.Ghost, "favorite");
+            gb.Margin = new Padding(0, 6, 0, 4);
+            info.Controls.Add(gb);
+        }
         if (Ledger.OvertimeActive)
         {
             info.Controls.Add(new Chip($"Overtime: {Ledger.Fmt((Store.S.OvertimeUntil - Store.Now) / 1000)} left", Theme.Warn) { Margin = new Padding(0, 4, 0, 10) });
@@ -311,6 +319,45 @@ public class MainForm : Form
         info.Controls.Add(playing);
 
         LockInCard(st);
+    }
+
+    /// <summary>Remove any amount of your balance, to undo time you didn't really earn.</summary>
+    void GiveBack()
+    {
+        var bal = Ledger.Balance();
+        if (bal <= 0) return;
+        var maxMin = (int)Math.Max(1, bal / 60);
+        var m = Prompt.Slider("Give time back",
+            "Earned something you didn't really earn, like a lock-in you forgot to stop? Take it off here. Can't be undone; doesn't count toward your daily limit.",
+            maxMin, 0, "Remove it", v => v == 0 ? "Slide to choose" : $"−{Prompt.MinText(v)}");
+        if (m is not > 0) return;
+        var took = Ledger.GiveBack(m >= maxMin ? bal : m.Value * 60L);
+        Store.Save();
+        _ = _app.SyncNow();
+        MessageBox.Show($"Removed {Ledger.FmtShort(took)}. Respect. 🫡", "Unrot");
+        Rebuild();
+    }
+
+    /// <summary>A free lock-in that hit the max sits here, unpaid, until you say how long was real.</summary>
+    void FreeReviewCard()
+    {
+        var ran = Store.S.FreeReviewSec;
+        if (ran <= 0) return;
+        var c = NewCard("Your free lock-in ran out", "hourglass_top", Theme.Warn);
+        c.Controls.Add(L($"It hit the {Ledger.FreeMaxMs / 3_600_000}-hour max, so it probably kept going after you stopped. Say how long you really worked to get paid.",
+            10.5f, Theme.Muted, false, c.Inner));
+        var b = Btn("How long did I work?", () =>
+        {
+            var keep = Prompt.Worked("Free lock-in", $"It ran for {Prompt.MinText(ran / 60)} in total.", ran, "Get paid");
+            if (keep == null) return;
+            var got = Ledger.ResolveFreeReview(keep.Value);
+            Store.Save();
+            _ = _app.SyncNow();
+            MessageBox.Show(got > 0 ? $"+{Ledger.FmtShort(got)} 💪" : "Nothing added", "Unrot");
+            Rebuild();
+        }, GameButton.Kind.Primary, "timer");
+        b.Margin = new Padding(0, 10, 0, 0);
+        c.Controls.Add(b);
     }
 
     void LockInCard(Settings st)
@@ -338,7 +385,12 @@ public class MainForm : Form
                 col.Controls.Add(L($"Free lock-in at {Ledger.FmtRatio(st.FreeRatio)}:1. Stop whenever; you're paid for every minute.", 10, Theme.Muted, false, c.Inner - 200));
                 col.Controls.Add(Btn("Stop & collect", () =>
                 {
-                    var got = Ledger.StopFree();
+                    var ran = Ledger.FreeElapsedSec;
+                    var keep = Prompt.Worked("Stop & collect",
+                        $"It's been running for {Prompt.MinText(ran / 60)}. If you forgot to stop it, slide it down to the time you really worked.",
+                        ran, "Collect");
+                    if (keep == null) return;
+                    var got = Ledger.StopFree(keep.Value);
                     Store.Save();
                     _ = _app.SyncNow();
                     MessageBox.Show($"+{Ledger.FmtShort(got)} 💪", "Unrot");

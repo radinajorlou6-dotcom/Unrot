@@ -281,7 +281,13 @@ class UnrotService : AccessibilityService() {
         Ledger.rollover(s, st)
 
         val earned = Ledger.settleFocus(s, st)
-        if (earned >= 0) {
+        if (earned == Ledger.NEEDS_REVIEW) {
+            Notif.alert(
+                this, "Free lock-in hit ${Ledger.FREE_MAX_MS / 3_600_000} hours",
+                "Forgot it was on? Open Unrot and say how long you really worked to get paid.",
+            )
+            syncSoon()
+        } else if (earned >= 0) {
             Notif.alert(this, "Lock-in complete 🎉", "+${Ledger.fmtShort(earned)} of scroll time")
             syncSoon()
         }
@@ -389,7 +395,10 @@ class UnrotService : AccessibilityService() {
         val dur = (now - s.pdStart) / 1000
         val pct = st.n("phoneDownPct")
         if (dur >= 10 * 60 && pct > 0) {
-            if (s.pdScreenSec <= 60) {
+            if (s.pdScreenSec <= 60 && s.pdLocal && s.pdFree && s.freeReviewSec > 0) {
+                // A free lock-in that hit the max isn't paid yet: the bonus goes on whatever you keep.
+                s.freeReviewBonus = true
+            } else if (s.pdScreenSec <= 60) {
                 val base = if (s.pdLocal) s.lastFocusPaid
                 else (dur / (if (s.pdFree) st.freeRatio else st.focusRatio)).toLong()
                 val bonus = base * pct / 100
