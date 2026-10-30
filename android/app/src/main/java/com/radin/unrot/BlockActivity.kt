@@ -100,9 +100,20 @@ class BlockActivity : Activity() {
                     root.add(button("Leave", Ui.Style.GHOST) { goHome() })
                 }
                 MODE_NIGHT -> {
+                    // Your 15 minutes just ran out while you were still in it: a quick "still up?", not the full wait.
+                    // (Only if you were still in it when it ran out; leaving and coming back gets the full wait.)
+                    val lastPass = UnrotService.nightPass[pkg] ?: 0L
+                    val stayed = (UnrotService.lastInApp[pkg] ?: 0L) >= lastPass - 5_000L
+                    val renewing = lastPass > 0 && stayed && System.currentTimeMillis() - lastPass < 2 * 60_000L
                     root.addWrap(heroIcon(R.drawable.ic_bedtime, Col.INDIGO), 14)
-                    root.add(text("It's late", 28f, bold = true))
-                    root.add(text("Scrolling now just steals from tomorrow. Do one of these instead:", 16f, Col.MUTED), 24)
+                    root.add(text(if (renewing) "Still up?" else "It's late", 28f, bold = true))
+                    root.add(
+                        text(
+                            if (renewing) "That's another ${UnrotService.NIGHT_PASS_MIN} min on $name past bedtime. Good place to stop:"
+                            else "Scrolling now just steals from tomorrow. Do one of these instead:",
+                            16f, Col.MUTED,
+                        ), 24,
+                    )
                     nightOptions(root)
                     root.add(space(8))
                     root.add(button("Go to sleep", Ui.Style.PRIMARY) { goHome() })
@@ -114,7 +125,7 @@ class BlockActivity : Activity() {
                     }
                     cont.isEnabled = false
                     root.add(cont)
-                    var wait = st.bedWaitSec
+                    var wait = if (renewing) 0 else st.bedWaitSec
                     tick(1000) {
                         if (wait > 0) {
                             cont.text = "Continue to $name in ${wait}s"
@@ -122,7 +133,8 @@ class BlockActivity : Activity() {
                             true
                         } else {
                             cont.isEnabled = true
-                            cont.text = "Continue to $name for ${UnrotService.NIGHT_PASS_MIN} min"
+                            cont.text = if (renewing) "Keep going, ${UnrotService.NIGHT_PASS_MIN} more min"
+                            else "Continue to $name for ${UnrotService.NIGHT_PASS_MIN} min"
                             false
                         }
                     }
