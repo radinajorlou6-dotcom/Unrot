@@ -132,6 +132,17 @@ class Store private constructor(ctx: Context) {
     var focusStart: Long
         get() = long("focusStart")
         set(v) = putLong("focusStart", v)
+    /** Bedtime "continue anyway" pass, for every blocked app (kept across restarts of the blocker). */
+    var nightPassUntil: Long
+        get() = long("nightPassUntil")
+        set(v) = putLong("nightPassUntil", v)
+    /** Last time a blocked app or site was on screen, and which (kept across restarts of the blocker). */
+    var lastBlockedSeen: Long
+        get() = long("lastBlockedSeen")
+        set(v) = putLong("lastBlockedSeen", v)
+    var lastBlockedKey: String
+        get() = str("lastBlockedKey")
+        set(v) = putStr("lastBlockedKey", v)
     /** Identifies the running lock-in across devices (its original start time; never shifts on pause). */
     var focusId: Long
         get() = long("focusId")

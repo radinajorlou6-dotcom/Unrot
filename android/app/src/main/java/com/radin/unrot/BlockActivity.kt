@@ -102,8 +102,8 @@ class BlockActivity : Activity() {
                 MODE_NIGHT -> {
                     // Your 15 minutes just ran out while you were still in it: a quick "still up?", not the full wait.
                     // (Only if you were still in it when it ran out; leaving and coming back gets the full wait.)
-                    val lastPass = UnrotService.nightPass[pkg] ?: 0L
-                    val stayed = (UnrotService.lastInApp[pkg] ?: 0L) >= lastPass - 5_000L
+                    val lastPass = s.nightPassUntil
+                    val stayed = s.lastBlockedSeen >= lastPass - 10_000L
                     val renewing = lastPass > 0 && stayed && System.currentTimeMillis() - lastPass < 2 * 60_000L
                     root.addWrap(heroIcon(R.drawable.ic_bedtime, Col.INDIGO), 14)
                     root.add(text(if (renewing) "Still up?" else "It's late", 28f, bold = true))
@@ -118,7 +118,7 @@ class BlockActivity : Activity() {
                     root.add(space(8))
                     root.add(button("Go to sleep", Ui.Style.PRIMARY) { goHome() })
                     val cont = button("", Ui.Style.GHOST) {
-                        UnrotService.grantNightPass(pkg)
+                        UnrotService.grantNightPass(this@BlockActivity)
                         UnrotService.introDone(pkg)
                         s.log("Kept scrolling $name past bedtime")
                         finish()

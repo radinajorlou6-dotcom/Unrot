@@ -36,12 +36,11 @@ class UnrotService : AccessibilityService() {
         @Volatile var running = false
             private set
 
-        /** Bedtime "continue anyway" passes: package -> valid until (ms). */
-        val nightPass = HashMap<String, Long>()
         @Volatile private var checkInAck = false
 
-        fun grantNightPass(pkg: String) {
-            nightPass[pkg] = System.currentTimeMillis() + 15 * 60_000L
+        /** Bedtime "continue anyway": [NIGHT_PASS_MIN] minutes for every blocked app, saved so a restart can't lose it. */
+        fun grantNightPass(ctx: android.content.Context) {
+            Store.get(ctx).nightPassUntil = System.currentTimeMillis() + NIGHT_PASS_MIN * 60_000L
         }
 
         fun ackCheckIn() {
@@ -120,6 +119,8 @@ class UnrotService : AccessibilityService() {
         Notif.ensureChannels(this)
         goForeground()
         s.log("Unrot is running")
+        // If Android restarted the blocker mid-show, remember you were already in it (no opening card again).
+        if (s.lastBlockedKey.isNotEmpty() && s.lastBlockedSeen > 0) lastInApp[s.lastBlockedKey] = s.lastBlockedSeen
         h.removeCallbacks(tick)
         h.post(tick)
     }
@@ -330,6 +331,10 @@ class UnrotService : AccessibilityService() {
                 spendAcc -= whole
             }
             visible.forEach { lastInApp[it] = now }
+            if (ticks % 3 == 0L) {
+                s.lastBlockedSeen = now
+                s.lastBlockedKey = primary ?: visible.first()
+            }
             val shown = primary ?: visible.first()
             if (primary != null) {
                 if (now - lastFlaggedAt > 60_000) {
@@ -458,7 +463,7 @@ class UnrotService : AccessibilityService() {
             Ledger.balanceSec(s) <= 0 -> BlockActivity.MODE_OUT
             pkg !in st.halfRate && Ledger.doomToday(s) >= st.n("dailyCapMin") * 60L -> BlockActivity.MODE_CAP
             st.inBedtime(LocalTime.now().let { it.hour * 60 + it.minute }) &&
-                (nightPass[pkg] ?: 0L) < now -> BlockActivity.MODE_NIGHT
+                s.nightPassUntil < now -> BlockActivity.MODE_NIGHT
             introPending == pkg -> BlockActivity.MODE_INTRO
             continuousSec >= nextCheckInAt && pkg !in st.halfRate -> BlockActivity.MODE_CHECKIN
             else -> null
