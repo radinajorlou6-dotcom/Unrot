@@ -573,6 +573,54 @@ public class MainForm : Form
         ChartCard("Social sites", "public", Theme.Danger, stats.Select(s => s.Doom / 60f).ToArray(), cap, v => v >= cap ? Theme.Danger : Theme.Accent,
             $"Minutes per day on this laptop. Dashed line = your {cap} min daily limit (shared with your phone).");
 
+        // This laptop + your phone, last 7 days.
+        var weeks = new List<Ledger.WeekTotals> { Ledger.WeekTotals.Mine() };
+        weeks.AddRange(Ledger.Remotes().Where(r => r.Week != null).Select(r => r.Week));
+        var gains = new Dictionary<string, long>();
+        var focus = new Dictionary<string, long>();
+        long locked = 0;
+        foreach (var w in weeks)
+        {
+            foreach (var (k, v) in w.Gains) gains[k] = gains.GetValueOrDefault(k) + v;
+            foreach (var (k, v) in w.Focus) focus[k] = focus.GetValueOrDefault(k) + v;
+            locked += w.Locked;
+        }
+
+        void Ranked(string title, string icon, Color color, List<(string Name, long Sec, bool Dim)> rows, string prefix, string note)
+        {
+            if (rows.Count == 0) return;
+            var c = NewCard(title, icon, color);
+            var max = Math.Max(1, rows.Max(x => x.Sec));
+            foreach (var (name, sec, dim) in rows)
+            {
+                var r = Row(c, c.Inner);
+                r.WrapContents = false;
+                var nl = L(name, 10.5f, dim ? Theme.Muted : Theme.Text, !dim, c.Inner - 110);
+                nl.Margin = new Padding(0, 0, 10, 0);
+                r.Controls.Add(nl);
+                r.Controls.Add(L(prefix + Hm(sec), 10, dim ? Theme.Muted : color));
+                c.Controls.Add(new Bar(c.Inner, 8) { Fraction = sec / (float)max, Color = dim ? Theme.Stroke : color });
+            }
+            if (note != null) c.Controls.Add(L(note, 9, Theme.Muted, false, c.Inner));
+        }
+
+        var gainRows = gains.Where(x => x.Value > 0).OrderByDescending(x => x.Value).Take(6)
+            .Select(x => (Ledger.GainLabels.GetValueOrDefault(x.Key, x.Key), x.Value, false)).ToList();
+        if (gainRows.Count > 0)
+            Ranked("Top time gainers", "bolt", Theme.Accent, gainRows, "+", "Last 7 days, this laptop and your phone.");
+
+        if (locked > 0)
+        {
+            var described = focus.Values.Sum();
+            var rows = focus.Where(x => x.Value >= 60).OrderByDescending(x => x.Value).Take(6)
+                .Select(x => (x.Key, x.Value, false)).ToList();
+            var undescribed = Math.Max(0, locked - described);
+            if (undescribed >= 60) rows.Add(("Undescribed lock-in", undescribed, true));
+            rows = rows.OrderByDescending(x => x.Item2).ToList();
+            Ranked("What you locked in on", "lock", Theme.Violet, rows, "",
+                "From the programs, sites and phone apps you had in front while locked in. Undescribed = screen off, nothing useful open, or not touching the laptop for 5 min (like working on paper).");
+        }
+
         if (Store.S.Log.Count > 0)
         {
             var c = NewCard("Recent", "schedule", Theme.Blue);

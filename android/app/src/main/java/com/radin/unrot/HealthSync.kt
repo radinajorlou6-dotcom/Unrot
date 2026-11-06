@@ -112,22 +112,22 @@ object HealthSync {
             val name = r.title?.takeIf { it.isNotBlank() } ?: "workout"
             val active = activeSec(ctx, st, r)
             val (counted, how) = when {
-                active != null -> active to "${active / 60} active by heart rate"
+                active != null -> active to "${active / 60} with your heart rate up"
                 sec > NO_HR_CAP_SEC -> NO_HR_CAP_SEC to "no heart rate, so capped at ${NO_HR_CAP_SEC / 60}"
                 else -> sec to "no heart rate"
             }
             if (counted < 60) {
-                s.log("$name, ${sec / 60} min: heart rate never got up to ${st.n("workoutHrMin")} bpm, so nothing earned")
+                s.log("$name, ${sec / 60} min: heart rate never got up to ${workingHr(ctx, st)} bpm, so nothing earned")
                 continue
             }
-            total += Ledger.credit(s, st, (counted / st.workoutRatio).toLong(), "$name, ${sec / 60} min ($how)")
+            total += Ledger.credit(s, st, (counted / st.workoutRatio).toLong(), "$name, ${sec / 60} min ($how)", "workout")
         }
         return total
     }
 
     /**
      * The part of a workout you were actually working: minutes where your average heart rate was at least
-     * [workoutHrMin], plus short dips between them (rest between sets, up to [workoutRestMin]). Long breaks
+     * [workingHr], plus short dips between them (rest between sets, up to [workoutRestMin]). Long breaks
      * spent chatting don't count. Returns null if the watch recorded no heart rate for this workout.
      */
     private fun activeSec(ctx: Context, st: Settings, r: ExerciseSessionRecord): Long? {
@@ -162,7 +162,7 @@ object HealthSync {
             sum[i] += smp.beatsPerMinute
             count[i]++
         }
-        val threshold = st.n("workoutHrMin")
+        val threshold = workingHr(ctx, st)
         val maxGap = st.n("workoutRestMin")
         val working = BooleanArray(minutes) { count[it] > 0 && sum[it] / count[it] >= threshold }
         var active = 0
@@ -174,6 +174,52 @@ object HealthSync {
             lastWorking = i
         }
         return active * 60L
+    }
+
+    /**
+     * The heart rate that counts as working: [workoutEffortPct] of the way from your resting rate to your max
+     * (e.g. resting 60, max 195, 30% → 101 bpm). Fits you, and keeps fitting as you get fitter.
+     */
+    fun workingHr(ctx: Context, st: Settings): Int {
+        val rest = restingHr(ctx)
+        val max = st.n("maxHr").coerceAtLeast(rest + 20)
+        return (rest + (max - rest) * st.n("workoutEffortPct") / 100.0).toInt()
+    }
+
+    /**
+     * Your resting heart rate, worked out once a day from the last week of watch readings
+     * (the low end of them, which is you sitting still or asleep). 65 until there's enough data.
+     */
+    fun restingHr(ctx: Context): Int {
+        val s = Store.get(ctx)
+        val today = LocalDate.now().toString()
+        if (s.restingHrDay == today && s.restingHr > 0) return s.restingHr.toInt()
+        val now = Instant.now()
+        val bpms = runCatching {
+            runBlocking {
+                val out = mutableListOf<Long>()
+                var token: String? = null
+                var pages = 0
+                do {
+                    val page = client(ctx).readRecords(
+                        ReadRecordsRequest(
+                            recordType = HeartRateRecord::class,
+                            timeRangeFilter = TimeRangeFilter.between(now.minus(Duration.ofDays(7)), now),
+                            pageToken = token,
+                        )
+                    )
+                    page.records.forEach { rec -> rec.samples.mapTo(out) { it.beatsPerMinute } }
+                    token = page.pageToken
+                } while (token != null && ++pages < 20)
+                out
+            }
+        }.getOrNull().orEmpty()
+        val rest = if (bpms.size >= 50) bpms.sorted()[bpms.size / 20].toInt().coerceIn(35, 100) else 65
+        if (bpms.size >= 50) {
+            s.restingHr = rest.toLong()
+            s.restingHrDay = today
+        }
+        return rest
     }
 
     private fun runPace(ctx: Context, s: Store, st: Settings, r: ExerciseSessionRecord, sec: Long): Long {

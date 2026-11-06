@@ -132,6 +132,13 @@ class Store private constructor(ctx: Context) {
     var focusStart: Long
         get() = long("focusStart")
         set(v) = putLong("focusStart", v)
+    /** Resting heart rate estimated from your watch, and the day it was worked out. */
+    var restingHr: Long
+        get() = long("restingHr")
+        set(v) = putLong("restingHr", v)
+    var restingHrDay: String
+        get() = str("restingHrDay")
+        set(v) = putStr("restingHrDay", v)
     /** Bedtime "continue anyway" pass, for every blocked app (kept across restarts of the blocker). */
     var nightPassUntil: Long
         get() = long("nightPassUntil")

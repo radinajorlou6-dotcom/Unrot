@@ -847,7 +847,7 @@ class MainActivity : Activity() {
 
         quest(R.drawable.ic_fitness_center, Col.FIRE, "Work out", "${Rules.fmtRatio(st.workoutRatio)} min → 1",
             "Gym, soccer, anything your Galaxy Watch logs. Only the minutes your heart rate is up " +
-                "(${st.n("workoutHrMin")}+ bpm, rests up to ${st.n("workoutRestMin")} min between sets) count." +
+                "(${st.n("workoutEffortPct")}% of the way from resting to max, rests up to ${st.n("workoutRestMin")} min between sets) count." +
                 if (st.countWalks) " Walks count too." else " Walks don't count.")
 
         val stepsToday = if (s.stepsDay == LocalDate.now().toString()) s.stepsPaidMin else 0L
@@ -993,6 +993,36 @@ class MainActivity : Activity() {
                 tc.add(r, 5)
                 tc.add(progress(sec / max, Col.WARN, 8), 12)
             }
+        }
+
+        // Top time gainers
+        if (w.gains.isNotEmpty()) {
+            val gc = section(root, "Top time gainers", R.drawable.ic_bolt, Col.ACCENT)
+            val max = w.gains.maxOf { it.second }.toFloat()
+            for ((name, sec) in w.gains.take(6)) {
+                val r = row()
+                r.addView(text(name, 15f, bold = true), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                r.addView(text("+" + Recap.hm(sec), 13.5f, Col.ACCENT))
+                gc.add(r, 5)
+                gc.add(progress(sec / max, Col.ACCENT, 8), 12)
+            }
+        }
+
+        // What the lock-ins were spent on
+        if (w.allLockedSec > 0) {
+            val lc = section(root, "What you locked in on", R.drawable.ic_lock, Col.VIOLET)
+            val rows = (w.focus.take(6) + if (w.undescribedSec >= 60) listOf("Undescribed lock-in" to w.undescribedSec) else emptyList())
+                .sortedByDescending { it.second }
+            val max = (rows.maxOfOrNull { it.second } ?: 1L).toFloat()
+            for ((name, sec) in rows) {
+                val r = row()
+                val off = name == "Undescribed lock-in"
+                r.addView(text(name, 15f, if (off) Col.MUTED else Col.TEXT, bold = !off), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                r.addView(text(Recap.hm(sec), 13.5f, Col.MUTED))
+                lc.add(r, 5)
+                lc.add(progress(sec / max, if (off) Col.MUTED else Col.VIOLET, 8), 12)
+            }
+            lc.add(text("From the apps, sites and laptop windows you had open while locked in. Undescribed = screen off or nothing useful open (like working on paper).", 12.5f, Col.MUTED), 0)
         }
 
         // Badges

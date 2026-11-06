@@ -99,6 +99,10 @@ class UnrotService : AccessibilityService() {
     private var pillParams: WindowManager.LayoutParams? = null
 
     private val ignoredPkgs = setOf("com.android.systemui", "android")
+    /** Home screen apps: being on the home screen during a lock-in isn't "doing" anything. */
+    private var launcherPkgs: Set<String> = emptySet()
+    /** The last website each browser showed (any site, not just blocked ones), for lock-in activity. */
+    private val hostMemory = HashMap<String, String>()
     private val guardPkgs = setOf(
         "com.android.settings",
         "com.google.android.packageinstaller",
@@ -115,6 +119,10 @@ class UnrotService : AccessibilityService() {
         running = true
         imePkgs = runCatching {
             getSystemService(InputMethodManager::class.java).inputMethodList.map { it.packageName }.toSet()
+        }.getOrDefault(emptySet())
+        launcherPkgs = runCatching {
+            packageManager.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME), 0)
+                .map { it.activityInfo.packageName }.toSet()
         }.getOrDefault(emptySet())
         Notif.ensureChannels(this)
         goForeground()
@@ -202,6 +210,16 @@ class UnrotService : AccessibilityService() {
         return if (pkg in URL_BAR_IDS && site != null) "site:$site" else pkg
     }
 
+    private val labelCache = HashMap<String, String>()
+
+    /** What you're doing right now, for lock-in activity: an app's name, or the website in a browser. */
+    private fun focusKey(): String? {
+        val pkg = currentPkg ?: return null
+        if (pkg == packageName || pkg in ignoredPkgs || pkg in imePkgs || pkg in launcherPkgs) return null
+        if (pkg in URL_BAR_IDS) hostMemory[pkg]?.let { return it }
+        return labelCache.getOrPut(pkg) { Recap.label(this, pkg) }
+    }
+
     private fun isBlocked(key: String, st: Settings) = key.startsWith("site:") || key in st.flagged
 
     private fun onKeyChanged() {
@@ -247,6 +265,7 @@ class UnrotService : AccessibilityService() {
         val raw = node.text?.toString()?.trim()?.lowercase() ?: return true to null
         val host = raw.substringAfter("://").substringBefore('/').substringBefore('?').substringBefore(':')
             .removePrefix("www.").removePrefix("m.").removePrefix("mobile.")
+        if (host.contains('.') && !host.contains(' ')) hostMemory[pkg] = host
         return true to st.sites.firstOrNull { Settings.siteMatches(host, it) }
     }
 
@@ -317,6 +336,10 @@ class UnrotService : AccessibilityService() {
         val others = if (usable) otherVisibleBlocked(st, primary) else emptyList()
         val visible = listOfNotNull(primary) + others.map { it.key }
         val pct = st.n("engagingCostPct") / 100.0
+
+        // During a lock-in (here or on the laptop), note what you're actually doing, for "What you locked in on".
+        // Screen off or the home screen = nothing noted (it shows up as "undescribed").
+        if (usable && Ledger.session(s)?.paused == false) focusKey()?.let { Ledger.addFocusTime(it, 1) }
 
         if (visible.isNotEmpty()) {
             val doomKey = visible.firstOrNull { it !in st.halfRate }

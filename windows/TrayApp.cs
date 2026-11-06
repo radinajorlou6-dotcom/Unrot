@@ -206,6 +206,11 @@ public class TrayApp : ApplicationContext
                 : $"Unrot · locked in, {Ledger.Fmt(cur.RemainingSec)} left";
             _icon.Text = t.Length > 63 ? t[..63] : t;
         }
+        // During a lock-in (here or on the phone), note what's in front, for "What you locked in on".
+        // Nothing in front, or 5 min without touching the laptop (working on paper), shows up as "undescribed".
+        if (Ledger.Current is { Paused: false } && Games.IdleSec() < 300 && Games.ForegroundLabel() is { } doing)
+            Ledger.AddFocusTime(doing);
+
         // Every 10s during a lock-in (so pause/finish from the phone lands fast), else every 30s.
         if (_ticks % 30 == 0 || (_ticks % 10 == 0 && Ledger.FocusActive)) _ = SyncNow();
     }

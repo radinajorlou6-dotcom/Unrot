@@ -69,6 +69,10 @@ public class DayStat
     public long Movie { get; set; }
     public long Locked { get; set; }
     public long Earned { get; set; }
+    /// <summary>Where earned time came from (category → seconds), for "biggest time gainers".</summary>
+    public Dictionary<string, long> Gains { get; set; } = new();
+    /// <summary>What you were doing during lock-ins (program or site → seconds).</summary>
+    public Dictionary<string, long> Focus { get; set; } = new();
 }
 
 public class LogLine

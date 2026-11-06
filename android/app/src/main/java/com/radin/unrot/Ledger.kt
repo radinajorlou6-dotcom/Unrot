@@ -17,6 +17,8 @@ object Ledger {
         val doomDay: String = "", val doomSec: Long = 0, val doomPrevDay: String = "", val doomPrevSec: Long = 0,
         val focusId: Long = 0, val focusStart: Long = 0, val focusPlanned: Long = 0, val focusPaused: Long = 0,
         val focusRatio: Double = 0.0, val earlyPct: Int = 50,
+        /** That device's last 7 days: {"gains":{cat:sec}, "focus":{name:sec}, "locked":sec}. */
+        val week: JSONObject? = null,
     ) {
         /** This device's doomscrolling on [day], if it knows. */
         fun doomOn(day: String): Long = when (day) {
@@ -44,6 +46,7 @@ object Ledger {
                     d.optString("doomDay"), d.optLong("doomSec"), d.optString("doomPrevDay"), d.optLong("doomPrevSec"),
                     d.optLong("focusId"), d.optLong("focusStart"), d.optLong("focusPlanned"), d.optLong("focusPaused"),
                     d.optDouble("focusRatio", 0.0), d.optInt("earlyPct", 50),
+                    d.optJSONObject("week"),
                 )
             }
         }
@@ -56,13 +59,14 @@ object Ledger {
         s.earnedSec - s.spentSec + remotes(s).sumOf { it.earned - it.spent }
 
     /** Adds time, respecting the max-bank cap. Returns seconds actually added. */
-    fun credit(s: Store, st: Settings, sec: Long, reason: String): Long = synchronized(s.lock) {
+    fun credit(s: Store, st: Settings, sec: Long, reason: String, cat: String = guessCat(reason)): Long = synchronized(s.lock) {
         if (sec <= 0) return 0
         val cap = st.maxBankMin * 60L
         val add = min(sec, max(0L, cap - balanceSec(s)))
         if (add > 0) {
             s.earnedSec = s.earnedSec + add
             stat("e", add)
+            mapStat("gains", cat, add)
         }
         val note = if (add < sec) " (bank full at ${st.maxBankMin} min)" else ""
         s.log("+${fmtShort(add)} · $reason$note")
@@ -83,7 +87,7 @@ object Ledger {
         rollover(s, Rules.current(s))
         s.doomSec = s.doomSec + sec
         stat("d", sec)
-        appStat(key, sec)
+        mapStat("apps", key, sec)
     }
 
     /** Doomscrolling today across this phone and synced devices. */
@@ -138,13 +142,41 @@ object Ledger {
 
     // ---------------------------------------------------------------- stats for the weekly recap
 
+    /** Where earned time came from, for "biggest time gainers". */
+    val GAIN_LABELS = linkedMapOf(
+        "lockin" to "Lock-ins", "workout" to "Workouts", "steps" to "Steps", "sleep" to "Sleep on time",
+        "calls" to "Family calls", "prs" to "PRs", "phonedown" to "Phone-down bonus", "streak" to "Streak bonuses",
+        "daily" to "Free daily minutes", "other" to "Other",
+    )
+
+    fun guessCat(reason: String): String {
+        val r = reason.lowercase()
+        return when {
+            "phone-down" in r -> "phonedown"
+            "lock-in" in r || "locked in" in r -> "lockin"
+            "streak" in r -> "streak"
+            "free daily" in r -> "daily"
+            "call with" in r -> "calls"
+            r.startsWith("pr:") || "best run pace" in r -> "prs"
+            "steps" in r -> "steps"
+            "asleep" in r -> "sleep"
+            else -> "other"
+        }
+    }
+
     private val pending = HashMap<String, Long>()
-    private val pendingApps = HashMap<String, Long>()
+    /** Per-day breakdowns: "apps" (time wasters), "gains" (time gainers), "focus" (what you were locked in on). */
+    private val pendingMaps = HashMap<String, HashMap<String, Long>>()
 
     private fun stat(k: String, v: Long) = synchronized(pending) { pending[k] = (pending[k] ?: 0L) + v }
-    private fun appStat(k: String, v: Long) = synchronized(pending) { pendingApps[k] = (pendingApps[k] ?: 0L) + v }
+    private fun mapStat(map: String, k: String, v: Long) = synchronized(pending) {
+        val m = pendingMaps.getOrPut(map) { HashMap() }
+        m[k] = (m[k] ?: 0L) + v
+    }
     fun countStat(k: String, v: Long = 1) = stat(k, v)
-    fun addAppTime(key: String, sec: Long) = appStat(key, sec)
+    fun addAppTime(key: String, sec: Long) = mapStat("apps", key, sec)
+    /** One more second of a lock-in spent on [key] (an app, "site:host", or a laptop program). */
+    fun addFocusTime(key: String, sec: Long) = mapStat("focus", key, sec)
 
     private var storeRef: Store? = null
 
@@ -160,21 +192,23 @@ object Ledger {
     /** Writes the in-memory counters into today's stats (called every ~30s). Keeps 21 days. */
     fun flushStats(s: Store) {
         storeRef = s
-        val (p, a) = synchronized(pending) {
-            val p = HashMap(pending); val a = HashMap(pendingApps)
-            pending.clear(); pendingApps.clear()
-            p to a
+        val (p, maps) = synchronized(pending) {
+            val p = HashMap(pending); val m = pendingMaps.mapValues { HashMap(it.value) }
+            pending.clear(); pendingMaps.clear()
+            p to m
         }
-        if (p.isEmpty() && a.isEmpty()) return
+        if (p.isEmpty() && maps.isEmpty()) return
         p["l"]?.let { s.lifeLockSec = s.lifeLockSec + it }
         p["c"]?.let { s.lifeCalls = s.lifeCalls + it }
         val all = s.obj("stats")
         val day = today()
         val d = all.optJSONObject(day) ?: JSONObject()
         p.forEach { (k, v) -> d.put(k, d.optLong(k) + v) }
-        val apps = d.optJSONObject("apps") ?: JSONObject()
-        a.forEach { (k, v) -> apps.put(k, apps.optLong(k) + v) }
-        d.put("apps", apps)
+        for ((name, m) in maps) {
+            val o = d.optJSONObject(name) ?: JSONObject()
+            m.forEach { (k, v) -> o.put(k, o.optLong(k) + v) }
+            d.put(name, o)
+        }
         all.put(day, d)
         val keep = all.keys().asSequence().toList().sorted().takeLast(21).toSet()
         all.keys().asSequence().toList().filter { it !in keep }.forEach { all.remove(it) }

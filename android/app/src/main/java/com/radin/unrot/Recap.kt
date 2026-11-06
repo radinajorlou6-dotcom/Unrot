@@ -1,7 +1,9 @@
 package com.radin.unrot
 
 import android.content.Context
+import org.json.JSONObject
 import java.time.LocalDate
+import kotlin.math.max
 
 /** Your last 7 days, from the stats Unrot keeps (phone, plus doomscrolling from a synced laptop). */
 object Recap {
@@ -9,6 +11,12 @@ object Recap {
         val earnedSec: Long, val doomSec: Long, val laptopDoomSec: Long, val lockedSec: Long, val calls: Long,
         val top: List<Pair<String, Long>>, val bestLockDay: Pair<String, Long>?, val streak: Int,
         val daysUnderTarget: Int, val days: Int,
+        /** Where your time came from, biggest first (phone + laptop). */
+        val gains: List<Pair<String, Long>> = emptyList(),
+        /** What you were locked in on, biggest first (phone + laptop), and the lock-in time nothing explains. */
+        val focus: List<Pair<String, Long>> = emptyList(),
+        val undescribedSec: Long = 0,
+        val allLockedSec: Long = 0,
     ) {
         val headline: String
             get() = "Locked in ${hm(lockedSec)}, doomscrolled ${hm(doomSec + laptopDoomSec)}, $calls family call" +
@@ -50,7 +58,46 @@ object Recap {
             d.optJSONObject("apps")?.let { a -> a.keys().forEach { k -> apps[k] = (apps[k] ?: 0L) + a.optLong(k) } }
         }
         val top = apps.entries.sortedByDescending { it.value }.take(3).map { label(ctx, it.key) to it.value }
-        return Week(earned, doom, laptop, locked, calls, top, best, s.streak, under, days)
+
+        // Gainers and lock-in activity, this phone plus whatever the laptop reports.
+        val mine = totals(s)
+        val gains = HashMap<String, Long>()
+        val focus = HashMap<String, Long>()
+        var allLocked = 0L
+        fun merge(o: JSONObject, labelOf: (String) -> String) {
+            o.optJSONObject("gains")?.let { g -> g.keys().forEach { k -> gains[k] = (gains[k] ?: 0L) + g.optLong(k) } }
+            o.optJSONObject("focus")?.let { f ->
+                f.keys().forEach { k -> val n = labelOf(k); focus[n] = (focus[n] ?: 0L) + f.optLong(k) }
+            }
+            allLocked += o.optLong("locked")
+        }
+        merge(mine) { it }
+        Ledger.remotes(s).forEach { r -> r.week?.let { merge(it) { k -> k } } }
+        val described = focus.values.sum()
+        return Week(
+            earned, doom, laptop, locked, calls, top, best, s.streak, under, days,
+            gains = gains.entries.filter { it.value > 0 }.sortedByDescending { it.value }
+                .map { (Ledger.GAIN_LABELS[it.key] ?: it.key) to it.value },
+            focus = focus.entries.filter { it.value >= 60 }.sortedByDescending { it.value }.map { it.key to it.value },
+            undescribedSec = max(0L, allLocked - described),
+            allLockedSec = allLocked,
+        )
+    }
+
+    /** This phone's last 7 days (gains, lock-in activity, lock-in total), shared with the laptop through sync. */
+    fun totals(s: Store): JSONObject {
+        val all = s.obj("stats")
+        val today = LocalDate.now()
+        val gains = JSONObject()
+        val focus = JSONObject()
+        var locked = 0L
+        for (i in 0 until 7) {
+            val d = all.optJSONObject(today.minusDays(i.toLong()).toString()) ?: continue
+            locked += d.optLong("l")
+            d.optJSONObject("gains")?.let { g -> g.keys().forEach { k -> gains.put(k, gains.optLong(k) + g.optLong(k)) } }
+            d.optJSONObject("focus")?.let { f -> f.keys().forEach { k -> focus.put(k, focus.optLong(k) + f.optLong(k)) } }
+        }
+        return JSONObject().put("gains", gains).put("focus", focus).put("locked", locked)
     }
 
     data class Day(val date: LocalDate, val doomSec: Long, val lockedSec: Long)

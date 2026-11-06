@@ -49,6 +49,7 @@ object Sync {
                 .put("focusRatio", if (s.focusFree) st.freeRatio else st.focusRatio)
                 .put("earlyPct", st.n("earlyEndPct"))
                 .put("rateNow", UnrotService.currentRate)
+                .put("week", Recap.totals(s))
                 .put("updated", System.currentTimeMillis())
             http("PUT", base(s) + "/devices/" + s.deviceId + ".json", mine.toString())
             val all = http("GET", base(s) + "/devices.json", null)

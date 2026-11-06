@@ -8,7 +8,8 @@ public static class Ledger
 {
     public record Remote(string Id, string Name, long Earned, long Spent, long FocusUntil, bool FocusFree,
         string DoomDay, long DoomSec, string DoomPrevDay, long DoomPrevSec, double RateNow = 0, long Updated = 0,
-        long FocusId = 0, long FocusStart = 0, long FocusPlanned = 0, long FocusPaused = 0, double FocusRatio = 0, int EarlyPct = 50)
+        long FocusId = 0, long FocusStart = 0, long FocusPlanned = 0, long FocusPaused = 0, double FocusRatio = 0, int EarlyPct = 50,
+        WeekTotals Week = null)
     {
         public long DoomOn(string day) => day == DoomDay ? DoomSec : day == DoomPrevDay ? DoomPrevSec : 0;
     }
@@ -38,7 +39,8 @@ public static class Ledger
                         Num(p.Value, "updated"),
                         Num(p.Value, "focusId"), Num(p.Value, "focusStart"), Num(p.Value, "focusPlanned"), Num(p.Value, "focusPaused"),
                         p.Value.TryGetProperty("focusRatio", out var fr) && fr.ValueKind == JsonValueKind.Number ? fr.GetDouble() : 0,
-                        p.Value.TryGetProperty("earlyPct", out var ep) && ep.ValueKind == JsonValueKind.Number ? (int)ep.GetDouble() : 50));
+                        p.Value.TryGetProperty("earlyPct", out var ep) && ep.ValueKind == JsonValueKind.Number ? (int)ep.GetDouble() : 50,
+                        p.Value.TryGetProperty("week", out var wk) && wk.ValueKind == JsonValueKind.Object ? WeekTotals.From(wk) : null));
                 }
             }
         }
@@ -56,18 +58,86 @@ public static class Ledger
 
     public static long Balance() => Store.S.EarnedSec - Store.S.SpentSec + Remotes().Sum(r => r.Earned - r.Spent);
 
-    public static long Credit(long sec, string reason)
+    public static long Credit(long sec, string reason, string cat = null)
     {
         if (sec <= 0) return 0;
         var cap = Rules.Current().MaxBankMin * 60L;
         var add = Math.Min(sec, Math.Max(0, cap - Balance()));
         Store.S.EarnedSec += add;
-        Stat(d => d.Earned += add);
+        var c = cat ?? GuessCat(reason);
+        Stat(d => { d.Earned += add; if (add > 0) d.Gains[c] = d.Gains.GetValueOrDefault(c) + add; });
         Store.AddLog($"+{FmtShort(add)} · {reason}" + (add < sec ? " (bank full)" : ""));
         return add;
     }
 
     public static void Spend(long sec) => Store.S.SpentSec += sec;
+
+    /// <summary>Where earned time came from, for "biggest time gainers" (same categories as the phone).</summary>
+    public static readonly Dictionary<string, string> GainLabels = new()
+    {
+        ["lockin"] = "Lock-ins", ["workout"] = "Workouts", ["steps"] = "Steps", ["sleep"] = "Sleep on time",
+        ["calls"] = "Family calls", ["prs"] = "PRs", ["phonedown"] = "Phone-down bonus", ["streak"] = "Streak bonuses",
+        ["daily"] = "Free daily minutes", ["other"] = "Other",
+    };
+
+    public static string GuessCat(string reason)
+    {
+        var r = reason.ToLowerInvariant();
+        if (r.Contains("phone-down")) return "phonedown";
+        if (r.Contains("lock-in") || r.Contains("locked in")) return "lockin";
+        if (r.Contains("streak")) return "streak";
+        if (r.Contains("free daily")) return "daily";
+        if (r.Contains("call with")) return "calls";
+        if (r.StartsWith("pr:") || r.Contains("best run pace")) return "prs";
+        if (r.Contains("steps")) return "steps";
+        if (r.Contains("asleep")) return "sleep";
+        return "other";
+    }
+
+    /// <summary>One more second of a lock-in spent on <paramref name="label"/>.</summary>
+    public static void AddFocusTime(string label) => Stat(d => d.Focus[label] = d.Focus.GetValueOrDefault(label) + 1);
+
+    /// <summary>A device's last 7 days: gains by category, lock-in activity, lock-in total.</summary>
+    public class WeekTotals
+    {
+        public Dictionary<string, long> Gains { get; set; } = new();
+        public Dictionary<string, long> Focus { get; set; } = new();
+        public long Locked { get; set; }
+
+        public static WeekTotals From(JsonElement e)
+        {
+            var w = new WeekTotals();
+            void Read(string key, Dictionary<string, long> into)
+            {
+                if (!e.TryGetProperty(key, out var o) || o.ValueKind != JsonValueKind.Object) return;
+                foreach (var p in o.EnumerateObject())
+                    if (p.Value.ValueKind == JsonValueKind.Number) into[p.Name] = (long)p.Value.GetDouble();
+            }
+            Read("gains", w.Gains);
+            Read("focus", w.Focus);
+            w.Locked = Num(e, "locked");
+            return w;
+        }
+
+        /// <summary>This laptop's own last 7 days.</summary>
+        public static WeekTotals Mine()
+        {
+            var w = new WeekTotals();
+            for (var i = 0; i < 7; i++)
+            {
+                var d = DayOf(DateTime.Now.Date.AddDays(-i).ToString("yyyy-MM-dd"));
+                w.Locked += d.Locked;
+                foreach (var (k, v) in d.Gains) w.Gains[k] = w.Gains.GetValueOrDefault(k) + v;
+                foreach (var (k, v) in d.Focus) w.Focus[k] = w.Focus.GetValueOrDefault(k) + v;
+            }
+            return w;
+        }
+
+        public Dictionary<string, object> ToJson() => new()
+        {
+            ["gains"] = Gains, ["focus"] = Focus, ["locked"] = Locked,
+        };
+    }
 
     /// <summary>Updates today's stats (keeps 14 days).</summary>
     public static void Stat(Action<DayStat> change)
@@ -672,6 +742,7 @@ public static class Sync
                 ["doomSec"] = Store.S.DoomSec,
                 ["doomPrevDay"] = Store.S.DoomPrevDay,
                 ["doomPrevSec"] = Store.S.DoomPrevSec,
+                ["week"] = Ledger.WeekTotals.Mine().ToJson(),
                 ["focusId"] = Store.S.FocusId,
                 ["focusStart"] = Store.S.FocusStart,
                 ["focusPlanned"] = Store.S.FocusPlannedSec,

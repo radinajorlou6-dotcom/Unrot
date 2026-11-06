@@ -267,6 +267,72 @@ public static class Games
     /// <summary>The window you're using right now.</summary>
     public static IntPtr ForegroundWindow() => GetForegroundWindow();
 
+    [DllImport("user32.dll")] static extern bool GetLastInputInfo(ref LASTINPUTINFO info);
+    [StructLayout(LayoutKind.Sequential)] struct LASTINPUTINFO { public uint cbSize; public uint dwTime; }
+
+    /// <summary>Seconds since you last touched the keyboard or mouse.</summary>
+    public static long IdleSec()
+    {
+        var info = new LASTINPUTINFO { cbSize = (uint)Marshal.SizeOf<LASTINPUTINFO>() };
+        if (!GetLastInputInfo(ref info)) return 0;
+        return Math.Max(0, (Environment.TickCount64 & 0xFFFFFFFF) - info.dwTime) / 1000;
+    }
+
+    static readonly string[] NotDoing =
+    {
+        "explorer.exe", "unrot.exe", "lockapp.exe", "searchhost.exe", "searchapp.exe", "startmenuexperiencehost.exe",
+        "shellexperiencehost.exe", "textinputhost.exe", "applicationframehost.exe",
+    };
+
+    static readonly string[] BrowserSuffixes =
+    {
+        " - Vivaldi", " - Google Chrome", " - Brave", " - Microsoft Edge", " - Microsoft\u200b Edge", " — Mozilla Firefox",
+        " - Mozilla Firefox", " - Opera", " - Arc",
+    };
+
+    static readonly Dictionary<string, string> _names = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// What you're doing in the window in front, for "What you locked in on": the program's name, or for a
+    /// browser the site from the tab title ("Two Sum - LeetCode" → "LeetCode"). Null when nothing useful is
+    /// in front (desktop, lock screen, Unrot itself).
+    /// </summary>
+    public static string ForegroundLabel()
+    {
+        var hwnd = GetForegroundWindow();
+        if (hwnd == IntPtr.Zero) return null;
+        GetWindowThreadProcessId(hwnd, out var pid);
+        var path = ExePath(pid);
+        var exe = path != null ? Path.GetFileName(path) : ProcName((int)pid);
+        if (exe == null || NotDoing.Contains(exe.ToLowerInvariant())) return null;
+        if (Browsers.Contains(exe.ToLowerInvariant()))
+        {
+            var sb = new StringBuilder(512);
+            GetWindowText(hwnd, sb, sb.Capacity);
+            var title = sb.ToString();
+            foreach (var suf in BrowserSuffixes)
+                if (title.EndsWith(suf, StringComparison.OrdinalIgnoreCase)) { title = title[..^suf.Length]; break; }
+            var parts = title.Split(new[] { " - ", " | ", " – ", " — ", " · " }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            var site = parts.Length > 0 ? parts[^1] : "";
+            if (site.Length is 0 or > 40 || site.Equals("New Tab", StringComparison.OrdinalIgnoreCase)) return null;
+            return site;
+        }
+        if (_names.TryGetValue(exe, out var cached)) return cached;
+        var name = Path.GetFileNameWithoutExtension(exe);
+        try
+        {
+            if (path != null)
+            {
+                var v = FileVersionInfo.GetVersionInfo(path);
+                var d = !string.IsNullOrWhiteSpace(v.FileDescription) ? v.FileDescription : v.ProductName;
+                if (!string.IsNullOrWhiteSpace(d) && d.Length <= 40) name = d.Trim();
+            }
+        }
+        catch { }
+        _names[exe] = name;
+        return name;
+    }
+
     /// <summary>The window of the game found by the last ForegroundGame() call.</summary>
     public static IntPtr LastGameHwnd;
 
