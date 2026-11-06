@@ -61,6 +61,11 @@ class UnrotService : AccessibilityService() {
         const val NIGHT_PASS_MIN = 15
 
         /** Where each browser keeps its address bar, so blocked sites can be spotted. */
+        /** [readSiteFrom]'s answer for youtube.com/shorts. */
+        const val SHORTS_MARK = "\u0000shorts"
+        /** Views that only exist while the YouTube app's Shorts player is open. */
+        val SHORTS_VIEW_IDS = listOf("reel_watch_player", "reel_player_page_container", "reel_recycler", "reel_watch_fragment_root")
+
         val URL_BAR_IDS = mapOf(
             "com.android.chrome" to "com.android.chrome:id/url_bar",
             "com.chrome.beta" to "com.chrome.beta:id/url_bar",
@@ -187,12 +192,14 @@ class UnrotService : AccessibilityService() {
                 refreshSite()
             }
         }
+        if (pkg == Settings.YOUTUBE_PKG && pkg == currentPkg) refreshShorts()
         if (pkg in guardPkgs) guard(pkg)
     }
 
     /** Called whenever a different app comes to the front. */
     private fun onForeground(pkg: String) {
         currentPkg = pkg
+        inShorts = pkg == Settings.YOUTUBE_PKG && showsShorts(runCatching { rootInActiveWindow }.getOrNull())
         // Fullscreen video and picture-in-picture hide the address bar, so start from the last site
         // this browser was on; reading the address bar (when visible) corrects it.
         currentSite = siteMemory[pkg]
@@ -207,7 +214,8 @@ class UnrotService : AccessibilityService() {
     private fun currentKey(): String? {
         val pkg = currentPkg ?: return null
         val site = currentSite
-        return if (pkg in URL_BAR_IDS && site != null) "site:$site" else pkg
+        if (pkg == Settings.YOUTUBE_PKG && inShorts && Settings.SHORTS_KEY in Rules.current(s).flagged) return Settings.SHORTS_KEY
+        return if (pkg in URL_BAR_IDS && site != null) siteKey(site) else pkg
     }
 
     private val labelCache = HashMap<String, String>()
@@ -218,6 +226,32 @@ class UnrotService : AccessibilityService() {
         if (pkg == packageName || pkg in ignoredPkgs || pkg in imePkgs || pkg in launcherPkgs) return null
         if (pkg in URL_BAR_IDS) hostMemory[pkg]?.let { return it }
         return labelCache.getOrPut(pkg) { Recap.label(this, pkg) }
+    }
+
+    /** A site from [readSiteFrom] as a key ("site:host", or YouTube Shorts). */
+    private fun siteKey(site: String) = if (site == SHORTS_MARK) Settings.SHORTS_KEY else "site:$site"
+
+    /** Are you watching Shorts in the YouTube app right now (its Shorts player is on screen)? */
+    private var inShorts = false
+    private var lastShortsCheck = 0L
+
+    private fun showsShorts(root: AccessibilityNodeInfo?): Boolean {
+        if (root == null || root.packageName?.toString() != Settings.YOUTUBE_PKG) return false
+        return SHORTS_VIEW_IDS.any { id ->
+            runCatching { root.findAccessibilityNodeInfosByViewId("${Settings.YOUTUBE_PKG}:id/$id") }.getOrNull()
+                ?.isNotEmpty() == true
+        }
+    }
+
+    private fun refreshShorts() {
+        val now = System.currentTimeMillis()
+        if (now - lastShortsCheck < 600) return
+        lastShortsCheck = now
+        val on = showsShorts(runCatching { rootInActiveWindow }.getOrNull())
+        if (on != inShorts) {
+            inShorts = on
+            onKeyChanged()
+        }
     }
 
     private fun isBlocked(key: String, st: Settings) = key.startsWith("site:") || key in st.flagged
@@ -266,6 +300,9 @@ class UnrotService : AccessibilityService() {
         val host = raw.substringAfter("://").substringBefore('/').substringBefore('?').substringBefore(':')
             .removePrefix("www.").removePrefix("m.").removePrefix("mobile.")
         if (host.contains('.') && !host.contains(' ')) hostMemory[pkg] = host
+        val path = raw.substringAfter("://").substringAfter('/', "")
+        if (Settings.siteMatches(host, "youtube.com") && path.startsWith("shorts") && Settings.SHORTS_KEY in st.flagged)
+            return true to SHORTS_MARK
         return true to st.sites.firstOrNull { Settings.siteMatches(host, it) }
     }
 
@@ -326,6 +363,8 @@ class UnrotService : AccessibilityService() {
                 onForeground(activePkg)
             } else if (activePkg != null && activePkg == currentPkg && activePkg in URL_BAR_IDS) {
                 refreshSite()
+            } else if (activePkg == Settings.YOUTUBE_PKG && activePkg == currentPkg) {
+                refreshShorts()
             }
         }
 
@@ -512,7 +551,9 @@ class UnrotService : AccessibilityService() {
             val key = if (p in URL_BAR_IDS) {
                 val (found, site) = readSiteFrom(root, p, st)
                 if (found) siteMemory[p] = site
-                (if (found) site else siteMemory[p])?.let { "site:$it" } ?: continue
+                (if (found) site else siteMemory[p])?.let { siteKey(it) } ?: continue
+            } else if (p == Settings.YOUTUBE_PKG && Settings.SHORTS_KEY in st.flagged && showsShorts(root)) {
+                Settings.SHORTS_KEY
             } else p
             if (key == primary || !isBlocked(key, st) || out.any { it.key == key }) continue
             val r = android.graphics.Rect()
@@ -536,7 +577,7 @@ class UnrotService : AccessibilityService() {
         val now = System.currentTimeMillis()
         if (now - lastPipDismiss < 4000) return
         lastPipDismiss = now
-        val what = if (o.key.startsWith("site:")) o.key.removePrefix("site:") else "app"
+        val what = if (o.key.startsWith("site:") || o.key == Settings.SHORTS_KEY) Settings.labelOf(this, o.key) else "app"
         if (o.pip) {
             runCatching {
                 val dm = resources.displayMetrics

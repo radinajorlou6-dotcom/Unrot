@@ -29,11 +29,7 @@ object Recap {
         return if (h > 0) "${h}h ${m}m" else "${m}m"
     }
 
-    fun label(ctx: Context, key: String): String = if (key.startsWith("site:")) key.removePrefix("site:") else
-        runCatching {
-            val pm = ctx.packageManager
-            pm.getApplicationLabel(pm.getApplicationInfo(key, 0)).toString()
-        }.getOrDefault(key)
+    fun label(ctx: Context, key: String): String = Settings.labelOf(ctx, key)
 
     fun week(ctx: Context, s: Store): Week {
         Ledger.flushStats(s)

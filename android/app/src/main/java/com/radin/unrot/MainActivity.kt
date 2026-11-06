@@ -72,6 +72,7 @@ class MainActivity : Activity() {
         Notif.ensureChannels(this)
         addEngagingAppsOnce()
         addMovieSitesOnce()
+        addShortsOnce()
         if (intent?.getBooleanExtra(EXTRA_LOCKIN, false) == true) tab = TAB_HOME
     }
 
@@ -82,6 +83,14 @@ class MainActivity : Activity() {
         val add = Settings.MOVIE_SITES - st.sites
         Rules.propose(s, st.copy(sites = st.sites + add, halfRate = st.halfRate + add.map { "site:$it" }))
         s.p.edit().putBoolean("movieSitesAdded", true).apply()
+    }
+
+    /** YouTube Shorts becomes its own blocked "app" at full price (blocking is instant). Runs once. */
+    private fun addShortsOnce() {
+        if (s.p.getBoolean("shortsAdded", false)) return
+        val st = Rules.current(s)
+        if (Settings.SHORTS_KEY !in st.flagged) Rules.propose(s, st.copy(flagged = st.flagged + Settings.SHORTS_KEY))
+        s.p.edit().putBoolean("shortsAdded", true).apply()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -1282,7 +1291,8 @@ class MainActivity : Activity() {
         val pm = packageManager
         val pct = st.n("engagingCostPct")
         val installed = st.flagged.mapNotNull { p ->
-            runCatching { pm.getApplicationLabel(pm.getApplicationInfo(p, 0)).toString() to p }.getOrNull()
+            if (p == Settings.SHORTS_KEY) Settings.SHORTS_LABEL to p
+            else runCatching { pm.getApplicationLabel(pm.getApplicationInfo(p, 0)).toString() to p }.getOrNull()
         }.sortedBy { it.first.lowercase() }
         if (installed.isEmpty()) c.add(text("None of your blocked apps are installed yet.", 14.5f, Col.MUTED), 10)
         for ((label, p) in installed) {

@@ -60,7 +60,23 @@ data class Settings(
         .put("sites", JSONArray().also { a -> sites.forEach { a.put(it) } })
 
     companion object {
+        /** YouTube Shorts, blocked and priced on its own (in the YouTube app and youtube.com/shorts). */
+        const val SHORTS_KEY = "yt:shorts"
+        const val SHORTS_LABEL = "YouTube Shorts"
+        const val YOUTUBE_PKG = "com.google.android.youtube"
+
+        /** Display name for an app package, "site:host", or YouTube Shorts. */
+        fun labelOf(ctx: android.content.Context, key: String): String = when {
+            key == SHORTS_KEY -> SHORTS_LABEL
+            key.startsWith("site:") -> key.removePrefix("site:")
+            else -> runCatching {
+                val pm = ctx.packageManager
+                pm.getApplicationLabel(pm.getApplicationInfo(key, 0)).toString()
+            }.getOrDefault(key)
+        }
+
         val DEFAULT_FLAGGED = setOf(
+            SHORTS_KEY,
             "com.zhiliaoapp.musically",      // TikTok
             "com.ss.android.ugc.trill",      // TikTok (other regions)
             "com.instagram.android",

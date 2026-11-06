@@ -63,9 +63,8 @@ class BlockActivity : Activity() {
         finish()
     }
 
-    private fun appName(p: String): String = if (p.startsWith("site:")) p.removePrefix("site:") else runCatching {
-        packageManager.getApplicationLabel(packageManager.getApplicationInfo(p, 0)).toString()
-    }.getOrDefault("that app")
+    private fun appName(p: String): String =
+        Settings.labelOf(this, p).takeIf { it != p || p == Settings.SHORTS_KEY } ?: "that app"
 
     private fun render(i: Intent) {
         ticker?.let { h.removeCallbacks(it) }

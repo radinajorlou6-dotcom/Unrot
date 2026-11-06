@@ -27,6 +27,7 @@ class AppPickerActivity : Activity() {
                 val ai = it.activityInfo.applicationInfo
                 App(ai.packageName, it.loadLabel(pm).toString(), ai.category == ApplicationInfo.CATEGORY_GAME)
             }
+            .plus(App(Settings.SHORTS_KEY, Settings.SHORTS_LABEL, false))
             .distinctBy { it.pkg }
             .filter { it.pkg != packageName }
             .sortedWith(compareBy({ it.pkg !in st.flagged }, { it.label.lowercase() }))
