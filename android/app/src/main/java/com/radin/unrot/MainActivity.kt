@@ -846,7 +846,9 @@ class MainActivity : Activity() {
         }
 
         quest(R.drawable.ic_fitness_center, Col.FIRE, "Work out", "${Rules.fmtRatio(st.workoutRatio)} min → 1",
-            "Gym, soccer, anything your Galaxy Watch logs." + if (st.countWalks) " Walks count too." else " Walks don't count.")
+            "Gym, soccer, anything your Galaxy Watch logs. Only the minutes your heart rate is up " +
+                "(${st.n("workoutHrMin")}+ bpm, rests up to ${st.n("workoutRestMin")} min between sets) count." +
+                if (st.countWalks) " Walks count too." else " Walks don't count.")
 
         val stepsToday = if (s.stepsDay == LocalDate.now().toString()) s.stepsPaidMin else 0L
         quest(R.drawable.ic_directions_walk, Col.BLUE, "Steps", "+${st.n("stepsRewardMin")} / ${"%,d".format(st.n("stepsUnit"))}",

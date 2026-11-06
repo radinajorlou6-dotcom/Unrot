@@ -6,6 +6,7 @@ import androidx.health.connect.client.HealthConnectFeatures
 import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.records.DistanceRecord
 import androidx.health.connect.client.records.ExerciseSessionRecord
+import androidx.health.connect.client.records.HeartRateRecord
 import androidx.health.connect.client.records.SleepSessionRecord
 import androidx.health.connect.client.records.StepsRecord
 import androidx.health.connect.client.request.AggregateRequest
@@ -29,9 +30,13 @@ object HealthSync {
     val READ_STEPS: String = HealthPermission.getReadPermission(StepsRecord::class)
     val READ_SLEEP: String = HealthPermission.getReadPermission(SleepSessionRecord::class)
     val READ_DISTANCE: String = HealthPermission.getReadPermission(DistanceRecord::class)
+    val READ_HEART_RATE: String = HealthPermission.getReadPermission(HeartRateRecord::class)
     const val READ_BACKGROUND: String = HealthPermission.PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND
 
-    val CORE = setOf(READ_EXERCISE, READ_STEPS, READ_SLEEP, READ_DISTANCE)
+    val CORE = setOf(READ_EXERCISE, READ_STEPS, READ_SLEEP, READ_DISTANCE, READ_HEART_RATE)
+
+    /** Without heart rate (watch off, or no permission), a workout counts for at most this long. */
+    private const val NO_HR_CAP_SEC = 60 * 60L
 
     private val RUN_TYPES = setOf(
         ExerciseSessionRecord.EXERCISE_TYPE_RUNNING,
@@ -105,9 +110,70 @@ object HealthSync {
             if (!st.countWalks && r.exerciseType == ExerciseSessionRecord.EXERCISE_TYPE_WALKING) continue
             if (sec < 5 * 60) continue
             val name = r.title?.takeIf { it.isNotBlank() } ?: "workout"
-            total += Ledger.credit(s, st, (sec / st.workoutRatio).toLong(), "$name, ${sec / 60} min")
+            val active = activeSec(ctx, st, r)
+            val (counted, how) = when {
+                active != null -> active to "${active / 60} active by heart rate"
+                sec > NO_HR_CAP_SEC -> NO_HR_CAP_SEC to "no heart rate, so capped at ${NO_HR_CAP_SEC / 60}"
+                else -> sec to "no heart rate"
+            }
+            if (counted < 60) {
+                s.log("$name, ${sec / 60} min: heart rate never got up to ${st.n("workoutHrMin")} bpm, so nothing earned")
+                continue
+            }
+            total += Ledger.credit(s, st, (counted / st.workoutRatio).toLong(), "$name, ${sec / 60} min ($how)")
         }
         return total
+    }
+
+    /**
+     * The part of a workout you were actually working: minutes where your average heart rate was at least
+     * [workoutHrMin], plus short dips between them (rest between sets, up to [workoutRestMin]). Long breaks
+     * spent chatting don't count. Returns null if the watch recorded no heart rate for this workout.
+     */
+    private fun activeSec(ctx: Context, st: Settings, r: ExerciseSessionRecord): Long? {
+        val samples = runCatching {
+            runBlocking {
+                val out = mutableListOf<HeartRateRecord.Sample>()
+                var token: String? = null
+                do {
+                    val page = client(ctx).readRecords(
+                        ReadRecordsRequest(
+                            recordType = HeartRateRecord::class,
+                            timeRangeFilter = TimeRangeFilter.between(r.startTime, r.endTime),
+                            pageToken = token,
+                        )
+                    )
+                    page.records.forEach { rec ->
+                        rec.samples.filterTo(out) { !it.time.isBefore(r.startTime) && it.time.isBefore(r.endTime) }
+                    }
+                    token = page.pageToken
+                } while (token != null)
+                out
+            }
+        }.getOrNull() ?: return null
+        if (samples.size < 10) return null
+
+        val startMs = r.startTime.toEpochMilli()
+        val minutes = ((r.endTime.toEpochMilli() - startMs) / 60_000L).toInt() + 1
+        val sum = LongArray(minutes)
+        val count = IntArray(minutes)
+        for (smp in samples) {
+            val i = ((smp.time.toEpochMilli() - startMs) / 60_000L).toInt().coerceIn(0, minutes - 1)
+            sum[i] += smp.beatsPerMinute
+            count[i]++
+        }
+        val threshold = st.n("workoutHrMin")
+        val maxGap = st.n("workoutRestMin")
+        val working = BooleanArray(minutes) { count[it] > 0 && sum[it] / count[it] >= threshold }
+        var active = 0
+        var lastWorking = -1
+        for (i in 0 until minutes) {
+            if (!working[i]) continue
+            val gap = if (lastWorking < 0) 0 else i - lastWorking - 1
+            active += 1 + (if (gap in 1..maxGap) gap else 0)
+            lastWorking = i
+        }
+        return active * 60L
     }
 
     private fun runPace(ctx: Context, s: Store, st: Settings, r: ExerciseSessionRecord, sec: Long): Long {
