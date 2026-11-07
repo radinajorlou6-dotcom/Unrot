@@ -15,6 +15,7 @@ object Pin {
         val salt = ByteArray(16).also { SecureRandom().nextBytes(it) }.joinToString("") { "%02x".format(it) }
         s.pinSalt = salt
         s.pinHash = hash(salt, pin)
+        s.rulesUpdated = System.currentTimeMillis() // shared with the laptop on the next sync
     }
 
     fun check(s: Store, pin: String): Boolean {

@@ -666,7 +666,15 @@ public class MainForm : Form
                 Rebuild();
             }, GameButton.Kind.Ghost));
         }
-        foreach (var x in Store.S.ExtraGames.ToList())
+        foreach (var x in st.LaptopIgnoredGames.ToList())
+        {
+            var r = Row(g, g.Inner);
+            var nl = L("Not a game: " + Path.GetFileName(x), 10, Theme.Muted);
+            nl.Margin = new Padding(0, 8, 10, 0);
+            r.Controls.Add(nl);
+            r.Controls.Add(Btn("Count it", () => { Rules.UnignoreGame(x); Rebuild(); }, GameButton.Kind.Ghost));
+        }
+        foreach (var x in st.LaptopExtraGames.ToList())
         {
             var r = Row(g, g.Inner);
             var nl = L("Added: " + Path.GetFileName(x), 10);
@@ -740,35 +748,115 @@ public class MainForm : Form
             r.Controls.Add(pl);
             r.Controls.Add(Btn("Cancel", () => { Rules.Cancel(p.Key); Rebuild(); }, GameButton.Kind.Ghost));
         }
-        var ratio = Num(st.FocusRatio, 0.1m, 100, 1);
-        var freeRatio = Num(st.FreeRatio, 0.1m, 100, 1);
-        var earlyEnd = Num(st.EarlyEndPct, 0, 100, 0);
-        var bank = Num(st.MaxBankMin, 5, 1440, 0);
-        var cap = Num(st.DailyCapMin, 15, 1440, 0);
-        var engaging = Num(st.EngagingCostPct, 10, 100, 0);
-        var grace = Num(st.GraceSec, 5, 600, 0);
-        var payback = Num(st.PaybackMult, 1m, 5, 1);
-        var prot = new CheckBox { Text = "Protect Unrot (stopping it needs the PIN)", Checked = st.Protection, ForeColor = Theme.Text, AutoSize = true, Font = Theme.Semi(10), BackColor = Color.Transparent };
-        Header(rc, "Earning");
-        RuleLine(rc, "Minutes locked in per 1 min earned", ratio);
-        RuleLine(rc, "Free lock-in: minutes per 1 min earned", freeRatio);
-        RuleLine(rc, "Pay for ending a lock-in early (%)", earlyEnd);
-        Header(rc, "Limits");
-        RuleLine(rc, "Most time you can save up (min)", bank);
-        RuleLine(rc, "Most doomscrolling per day (min, phone + laptop)", cap);
-        RuleLine(rc, "Games & movie sites cost (% of normal)", engaging);
-        Header(rc, "Games");
-        RuleLine(rc, "Seconds to save before a game closes", grace);
-        RuleLine(rc, $"Overtime payback multiplier (overtime is up to {Ledger.OvertimeMin} min)", payback);
-        prot.Margin = new Padding(0, 10, 0, 10);
-        rc.Controls.Add(prot);
-        rc.Controls.Add(Btn("Save rules", () =>
+        // Every rule, same as on the phone. One save button; stricter applies now, looser waits.
+        var next = st.Clone();
+        var apply = new List<Action>();
+        void Ratio(string label, double v, Action<double> set)
         {
-            var delayed = Rules.ProposeSettings((double)ratio.Value, (int)bank.Value, (int)grace.Value, prot.Checked, (int)engaging.Value, (int)earlyEnd.Value)
-                + Rules.ProposeExtra((double)freeRatio.Value, (double)payback.Value, (int)cap.Value);
-            MessageBox.Show(delayed > 0 ? "Saved. Looser changes kick in 24 hours from now." : "Saved.", "Unrot");
+            var n = Num(v, 0.1m, 100, 1);
+            RuleLine(rc, label, n);
+            apply.Add(() => set((double)n.Value));
+        }
+        void Whole(string label, int v, int min, int max, Action<int> set)
+        {
+            var n = Num(v, min, max, 0);
+            RuleLine(rc, label, n);
+            apply.Add(() => set((int)n.Value));
+        }
+        void Rule(string key)
+        {
+            var r = NumRules.ByKey(key);
+            Whole(r.Label + (r.Unit is "" or "%" or "steps" ? "" : $" ({r.Unit})"), st.N(key), r.Min, r.Max, v => next.Nums[key] = v);
+        }
+        void Check(string label, bool v, Action<bool> set)
+        {
+            var cb = new CheckBox { Text = label, Checked = v, ForeColor = Theme.Text, AutoSize = true, Font = Theme.Semi(10), BackColor = Color.Transparent, Margin = new Padding(0, 6, 0, 6) };
+            rc.Controls.Add(cb);
+            apply.Add(() => set(cb.Checked));
+        }
+        TextBox TimeBox(int m) => new()
+        {
+            Text = $"{m / 60:00}:{m % 60:00}", Width = 70, BackColor = Theme.Card2, ForeColor = Theme.Text,
+            BorderStyle = BorderStyle.FixedSingle, Font = Theme.Semi(10.5f), Margin = new Padding(0, 3, 10, 0),
+        };
+
+        Header(rc, "Earning");
+        Ratio("Lock-in: minutes per 1 min earned", st.FocusRatio, v => next.FocusRatio = v);
+        Ratio("Free lock-in: minutes per 1 min earned", st.FreeRatio, v => next.FreeRatio = v);
+        Rule("earlyEndPct");
+        Rule("phoneDownPct");
+        Ratio("Workouts: minutes per 1 min earned", st.WorkoutRatio, v => next.WorkoutRatio = v);
+        Check("Count walks as workouts", st.CountWalks, v => next.CountWalks = v);
+        foreach (var k in new[] { "workoutEffortPct", "maxHr", "workoutRestMin", "callRewardMin", "callMinMin", "callCooldownH",
+                     "stepsUnit", "stepsRewardMin", "stepsCapMin", "sleepBonusMin", "runPrBonusMin", "liftPrBonusMin", "liftPrCapMin" })
+            Rule(k);
+        Whole("Free minutes every day", st.DailyBaseMin, 0, 600, v => next.DailyBaseMin = v);
+
+        Header(rc, "Limits");
+        Rule("dailyCapMin");
+        Whole("Most time you can save up (min)", st.MaxBankMin, 5, 1440, v => next.MaxBankMin = v);
+        Rule("engagingCostPct");
+
+        Header(rc, "Streaks");
+        foreach (var k in new[] { "streakTargetMin", "streak3Min", "streak7Min", "streak30Min" }) Rule(k);
+
+        Header(rc, "Nudges (phone)");
+        Rule("introWaitSec");
+        Whole("\"Still glad you're here?\" check-in after (min, 0 = off)", st.CheckInMin, 0, 240, v => next.CheckInMin = v);
+        var bedRow = Row(rc, rc.Inner);
+        bedRow.WrapContents = false;
+        var bl = L("Bedtime from / to (24h, same = off)", 10, Theme.Text, false, rc.Inner - 170);
+        bl.AutoSize = false;
+        bl.Size = new Size(rc.Inner - 170, 28);
+        bl.TextAlign = ContentAlignment.MiddleLeft;
+        bedRow.Controls.Add(bl);
+        var bedFrom = TimeBox(st.BedStart);
+        var bedTo = TimeBox(st.BedEnd);
+        bedRow.Controls.Add(bedFrom);
+        bedRow.Controls.Add(bedTo);
+        static int? ParseTime(string txt)
+        {
+            var bits = txt.Trim().Split(':');
+            return bits.Length == 2 && int.TryParse(bits[0], out var hh) && int.TryParse(bits[1], out var mi) && hh is >= 0 and < 24 && mi is >= 0 and < 60
+                ? hh * 60 + mi : null;
+        }
+        apply.Add(() =>
+        {
+            if (ParseTime(bedFrom.Text) is int a1 && ParseTime(bedTo.Text) is int b1) { next.BedStart = a1; next.BedEnd = b1; }
+        });
+        Whole("Bedtime: seconds to wait before \"continue\"", st.BedWaitSec, 0, 600, v => next.BedWaitSec = v);
+
+        Header(rc, "Laptop games");
+        Whole("Seconds to save before a game closes", st.GraceSec, 0, 600, v => next.GraceSec = v);
+        var pb = Num(st.PaybackMult, 1m, 5, 1);
+        RuleLine(rc, $"Overtime payback multiplier (overtime is up to {Ledger.OvertimeMin} min)", pb);
+        apply.Add(() => next.PaybackMult = (double)pb.Value);
+
+        Header(rc, "Protection");
+        Check("Protect Unrot (stopping it needs the PIN)", st.Protection, v => next.Protection = v);
+
+        var placed = new HashSet<string> { "earlyEndPct", "phoneDownPct", "workoutEffortPct", "maxHr", "workoutRestMin", "callRewardMin",
+            "callMinMin", "callCooldownH", "stepsUnit", "stepsRewardMin", "stepsCapMin", "sleepBonusMin", "runPrBonusMin", "liftPrBonusMin",
+            "liftPrCapMin", "dailyCapMin", "engagingCostPct", "streakTargetMin", "streak3Min", "streak7Min", "streak30Min", "introWaitSec" };
+        var rest = NumRules.All.Where(r => !placed.Contains(r.Key)).ToList();
+        if (rest.Count > 0)
+        {
+            Header(rc, "More");
+            foreach (var r in rest) Rule(r.Key);
+        }
+
+        var save = Btn("Save rules", () =>
+        {
+            foreach (var act in apply) act();
+            var delayed = Rules.Propose(next);
+            MessageBox.Show(delayed > 0 ? "Saved. Looser changes kick in 24 hours from now (on your phone too)." : "Saved (on your phone too).", "Unrot");
             Rebuild();
-        }, GameButton.Kind.Primary, "check_circle"));
+        }, GameButton.Kind.Primary, "check_circle");
+        save.Margin = new Padding(0, 12, 0, 0);
+        rc.Controls.Add(save);
+
+        // ---- Phone apps
+        PhoneAppsCard(st);
 
         // ---- PIN
         var pc = NewCard("Family PIN", "key", Theme.Gold);
@@ -828,6 +916,74 @@ public class MainForm : Form
             sc.Controls.Add(L($"• {d.Name}: earned {Ledger.FmtShort(d.Earned)}, spent {Ledger.FmtShort(d.Spent)}", 9, Theme.Muted, false, sc.Inner));
 
         Add(L($"Data: {Store.Dir}", 8, Theme.Muted, false, CW));
+    }
+
+    bool _showAllApps;
+
+    /// <summary>Blocked apps on your phone, editable here (the phone sends its app list through sync).</summary>
+    void PhoneAppsCard(Settings st)
+    {
+        var c = NewCard("Blocked phone apps", "apps", Theme.Fire);
+        var apps = PhoneApps.All();
+        foreach (var pkg in st.Flagged.Where(x => apps.All(a => a.Pkg != x)).ToList())
+            apps.Add(new PhoneApps.App(pkg, pkg == Settings.ShortsKey ? "YouTube Shorts" : pkg, false));
+        if (apps.Count == 0)
+        {
+            c.Controls.Add(L("Open Unrot on your phone once (with sync set up) and your apps show up here.", 10, Theme.Muted, false, c.Inner));
+            return;
+        }
+        c.Controls.Add(L($"Checked apps cost time on your phone. Tap the price to switch between full and {st.EngagingCostPct}% (games, movies). " +
+            "Blocking or raising a price is instant; unblocking or cheapening waits 24 hours.", 10, Theme.Muted, false, c.Inner));
+        var next = st.Clone();
+        var shown = apps.OrderBy(a => !st.Flagged.Contains(a.Pkg)).ThenBy(a => a.Label, StringComparer.CurrentCultureIgnoreCase)
+            .Where(a => _showAllApps || st.Flagged.Contains(a.Pkg)).ToList();
+        foreach (var app in shown)
+        {
+            var r = Row(c, c.Inner);
+            r.WrapContents = false;
+            var cb = new CheckBox
+            {
+                Text = app.Label + (app.Game ? "  🎮" : ""), Checked = st.Flagged.Contains(app.Pkg), ForeColor = Theme.Text,
+                AutoSize = false, Size = new Size(c.Inner - 140, 30), Font = Theme.Semi(10), BackColor = Color.Transparent,
+            };
+            var price = new GameButton(next.HalfRate.Contains(app.Pkg) ? $"{st.EngagingCostPct}%" : "Full", GameButton.Kind.Ghost, () => { }, null, 110);
+            void Refresh()
+            {
+                price.Visible = next.Flagged.Contains(app.Pkg);
+                price.Text = next.HalfRate.Contains(app.Pkg) ? $"{st.EngagingCostPct}%" : "Full";
+                price.Invalidate();
+            }
+            cb.CheckedChanged += (_, _) =>
+            {
+                if (cb.Checked)
+                {
+                    if (!next.Flagged.Contains(app.Pkg)) next.Flagged.Add(app.Pkg);
+                    if (app.Game && !next.HalfRate.Contains(app.Pkg)) next.HalfRate.Add(app.Pkg);
+                }
+                else next.Flagged.Remove(app.Pkg);
+                Refresh();
+            };
+            price.Click += (_, _) =>
+            {
+                if (!next.HalfRate.Remove(app.Pkg)) next.HalfRate.Add(app.Pkg);
+                Refresh();
+            };
+            r.Controls.Add(cb);
+            r.Controls.Add(price);
+            Refresh();
+        }
+        var br = Row(c, c.Inner);
+        br.Margin = new Padding(0, 10, 0, 0);
+        var saveApps = Btn("Save phone apps", () =>
+        {
+            next.HalfRate = next.HalfRate.Where(k => k.StartsWith("site:") || next.Flagged.Contains(k)).ToList();
+            var delayed = Rules.Propose(next, k => apps.FirstOrDefault(a => a.Pkg == k)?.Label ?? k);
+            MessageBox.Show(delayed > 0 ? $"Saved. {delayed} loosening change(s) kick in 24 hours from now." : "Saved. Your phone picks it up within a minute.", "Unrot");
+            Rebuild();
+        }, GameButton.Kind.Primary, "check_circle");
+        saveApps.Margin = new Padding(0, 0, 10, 0);
+        br.Controls.Add(saveApps);
+        br.Controls.Add(Btn(_showAllApps ? "Only blocked apps" : $"Show all {apps.Count} apps", () => { _showAllApps = !_showAllApps; Rebuild(); }, GameButton.Kind.Ghost));
     }
 
     void SetPin()

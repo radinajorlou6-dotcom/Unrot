@@ -132,6 +132,20 @@ class Store private constructor(ctx: Context) {
     var focusStart: Long
         get() = long("focusStart")
         set(v) = putLong("focusStart", v)
+    /** When your rules last changed (here or adopted from the laptop), and whether they've been shared yet. */
+    var rulesUpdated: Long
+        get() = long("rulesUpdated")
+        set(v) = putLong("rulesUpdated", v)
+    var rulesSynced: Boolean
+        get() = p.getBoolean("rulesSynced", false)
+        set(v) = p.edit().putBoolean("rulesSynced", v).apply()
+    /** Your installed apps (for picking blocked apps from the laptop), and what was last sent. */
+    var phoneAppsJson: String
+        get() = str("phoneAppsJson")
+        set(v) = putStr("phoneAppsJson", v)
+    var phoneAppsSent: String
+        get() = str("phoneAppsSent")
+        set(v) = putStr("phoneAppsSent", v)
     /** Resting heart rate estimated from your watch, and the day it was worked out. */
     var restingHr: Long
         get() = long("restingHr")

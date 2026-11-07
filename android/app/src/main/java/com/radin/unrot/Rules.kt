@@ -28,6 +28,16 @@ data class Settings(
     val halfRate: Set<String> = emptySet(),
     /** Blocked websites (in Brave, Chrome and other browsers). */
     val sites: Set<String> = DEFAULT_SITES,
+    // ---- Laptop rules (the laptop uses these; editable from either device) ----
+    /** Seconds the laptop gives you to save your game before closing it. */
+    val graceSec: Int = 30,
+    /** Laptop overtime costs this many times normal, paid back from future earnings. */
+    val paybackMult: Double = 1.0,
+    /** What the laptop looks for in a tab title for each blocked site (alternatives separated by |). */
+    val siteKeywords: Map<String, String> = emptyMap(),
+    /** Programs you added on the laptop as games, and ones you said aren't games. */
+    val laptopExtraGames: Set<String> = emptySet(),
+    val laptopIgnoredGames: Set<String> = emptySet(),
 ) {
     val bedtimeOn: Boolean get() = bedStart != bedEnd
 
@@ -58,6 +68,11 @@ data class Settings(
         .put("nums", JSONObject().also { o -> nums.forEach { (k, v) -> o.put(k, v) } })
         .put("halfRate", JSONArray().also { a -> halfRate.forEach { a.put(it) } })
         .put("sites", JSONArray().also { a -> sites.forEach { a.put(it) } })
+        .put("graceSec", graceSec)
+        .put("paybackMult", paybackMult)
+        .put("siteKeywords", JSONObject().also { o -> siteKeywords.forEach { (k, v) -> o.put(k, v) } })
+        .put("laptopExtraGames", JSONArray().also { a -> laptopExtraGames.forEach { a.put(it) } })
+        .put("laptopIgnoredGames", JSONArray().also { a -> laptopIgnoredGames.forEach { a.put(it) } })
 
     companion object {
         /** YouTube Shorts, blocked and priced on its own (in the YouTube app and youtube.com/shorts). */
@@ -133,6 +148,54 @@ data class Settings(
                 halfRate = o.optJSONArray("halfRate")?.let { a -> (0 until a.length()).map { a.getString(it) }.toSet() } ?: emptySet(),
                 sites = o.optJSONArray("sites")?.let { a -> (0 until a.length()).map { a.getString(it) }.toSet() } ?: d.sites,
                 nums = o.optJSONObject("nums")?.let { n -> n.keys().asSequence().associateWith { n.optInt(it) } } ?: emptyMap(),
+                graceSec = o.optInt("graceSec", d.graceSec),
+                paybackMult = o.optDouble("paybackMult", d.paybackMult),
+                siteKeywords = o.optJSONObject("siteKeywords")?.let { n -> n.keys().asSequence().associateWith { n.optString(it) } } ?: emptyMap(),
+                laptopExtraGames = strings(o.optJSONArray("laptopExtraGames")),
+                laptopIgnoredGames = strings(o.optJSONArray("laptopIgnoredGames")),
+            )
+        }
+
+        private fun strings(a: JSONArray?): Set<String> = if (a == null) emptySet() else (0 until a.length()).map { a.getString(it) }.toSet()
+
+        /**
+         * The first time the phone and laptop share rules: each side keeps the rules that are its own
+         * (phone apps, workouts, bedtime… / laptop games, save warning…), and for rules they both use
+         * (ratios, sites, daily limit…) the stricter of the two wins, so syncing can never loosen anything.
+         */
+        fun mergeFirst(phone: Settings, laptop: Settings): Settings {
+            val sharedNums = listOf("engagingCostPct", "earlyEndPct", "dailyCapMin")
+            var nums = phone.nums
+            for (k in sharedNums) {
+                val r = NumRules.byKey(k)
+                val a = phone.n(k)
+                val b = laptop.n(k)
+                nums = nums + (k to if (r.looserIfHigher) minOf(a, b) else maxOf(a, b))
+            }
+            val sites = phone.sites + laptop.sites
+            val halfSites = sites.filter { d ->
+                val k = "site:$d"
+                val inP = d in phone.sites
+                val inL = d in laptop.sites
+                when {
+                    inP && inL -> k in phone.halfRate && k in laptop.halfRate
+                    inP -> k in phone.halfRate
+                    else -> k in laptop.halfRate
+                }
+            }.map { "site:$it" }
+            return phone.copy(
+                focusRatio = maxOf(phone.focusRatio, laptop.focusRatio),
+                freeRatio = maxOf(phone.freeRatio, laptop.freeRatio),
+                maxBankMin = minOf(phone.maxBankMin, laptop.maxBankMin),
+                protection = phone.protection || laptop.protection,
+                nums = nums,
+                sites = sites,
+                halfRate = phone.halfRate.filter { !it.startsWith("site:") }.toSet() + halfSites,
+                graceSec = laptop.graceSec,
+                paybackMult = laptop.paybackMult,
+                siteKeywords = laptop.siteKeywords,
+                laptopExtraGames = laptop.laptopExtraGames,
+                laptopIgnoredGames = laptop.laptopIgnoredGames,
             )
         }
     }
@@ -169,12 +232,64 @@ object Rules {
     }
 
     private fun save(s: Store, st: Settings, pend: List<Pending>) {
+        s.rulesUpdated = System.currentTimeMillis()
         s.settingsJson = st.toJson().toString()
         val a = JSONArray()
         pend.forEach {
             a.put(JSONObject().put("key", it.key).put("value", it.value).put("applyAt", it.applyAt).put("label", it.label))
         }
         s.pendingJson = a.toString()
+    }
+
+    // ---- Shared with the laptop (through sync) ----
+
+    private fun pendingJson(pend: List<Pending>) = JSONArray().also { a ->
+        pend.forEach { a.put(JSONObject().put("key", it.key).put("value", it.value).put("applyAt", it.applyAt).put("label", it.label)) }
+    }
+
+    /** Everything both devices share: the rules, changes waiting to kick in, and the family PIN. */
+    fun sharedDoc(s: Store): JSONObject = synchronized(s.lock) {
+        val st = current(s)
+        JSONObject()
+            .put("settings", st.toJson())
+            .put("pending", runCatching { JSONArray(s.pendingJson) }.getOrDefault(JSONArray()))
+            .put("updated", s.rulesUpdated)
+            .put("pinSalt", s.pinSalt)
+            .put("pinHash", s.pinHash)
+    }
+
+    /** Takes the newer rules another device saved, as they are (their waits were already applied there). */
+    fun adopt(s: Store, doc: JSONObject) = synchronized(s.lock) {
+        val st = Settings.fromJson(doc.optJSONObject("settings")?.toString() ?: return)
+        s.settingsJson = st.toJson().toString()
+        s.pendingJson = (doc.optJSONArray("pending") ?: JSONArray()).toString()
+        s.rulesUpdated = doc.optLong("updated")
+        adoptPin(s, doc)
+    }
+
+    private fun adoptPin(s: Store, doc: JSONObject) {
+        val hash = doc.optString("pinHash")
+        if (hash.isNotEmpty() && hash != s.pinHash) {
+            s.pinHash = hash
+            s.pinSalt = doc.optString("pinSalt")
+        }
+    }
+
+    /** The first time rules meet another device's: see [Settings.mergeFirst]. */
+    fun mergeFirst(s: Store, doc: JSONObject) = synchronized(s.lock) {
+        val mine = current(s)
+        val theirs = Settings.fromJson(doc.optJSONObject("settings")?.toString() ?: "{}")
+        val merged = Settings.mergeFirst(mine, theirs)
+        val pend = pending(s).toMutableList()
+        val other = doc.optJSONArray("pending") ?: JSONArray()
+        for (i in 0 until other.length()) {
+            val o = other.getJSONObject(i)
+            val p = Pending(o.optString("key"), o.optString("value"), o.optLong("applyAt"), o.optString("label"))
+            if (pend.none { it.key == p.key }) pend += p
+        }
+        if (s.pinHash.isEmpty()) adoptPin(s, doc)
+        save(s, merged, pend)
+        if (merged != mine) s.log("Rules now shared with your laptop (the stricter of each kept)")
     }
 
     fun cancel(s: Store, key: String) = synchronized(s.lock) {
@@ -201,6 +316,12 @@ object Rules {
         key.startsWith("num:") -> st.withNum(key.removePrefix("num:"), v.toInt())
         key.startsWith("half:") -> st.copy(halfRate = st.halfRate + key.removePrefix("half:"))
         key.startsWith("unsite:") -> st.copy(sites = st.sites - key.removePrefix("unsite:"))
+        key == "graceSec" -> st.copy(graceSec = v.toInt())
+        key == "paybackMult" -> st.copy(paybackMult = v.toDouble())
+        key.startsWith("unextra:") -> st.copy(laptopExtraGames = st.laptopExtraGames - key.removePrefix("unextra:"))
+        key.startsWith("ignore:") -> key.removePrefix("ignore:").let {
+            st.copy(laptopIgnoredGames = st.laptopIgnoredGames + it, laptopExtraGames = st.laptopExtraGames - it)
+        }
         else -> st
     }
 
@@ -264,6 +385,33 @@ object Rules {
             new.countWalks && !old.countWalks, "Count walks → ${if (new.countWalks) "on" else "off"}")
         handle("protection", old.protection.toString(), new.protection.toString(),
             !new.protection, "Protection → ${if (new.protection) "on" else "off"}")
+        handle("graceSec", old.graceSec.toString(), new.graceSec.toString(),
+            new.graceSec > old.graceSec, "Laptop save-your-game warning → ${new.graceSec}s")
+        handle("paybackMult", old.paybackMult.toString(), new.paybackMult.toString(),
+            new.paybackMult < old.paybackMult, "Laptop overtime payback → ${fmtRatio(new.paybackMult)}×")
+        if (new.siteKeywords != old.siteKeywords) {
+            st = st.copy(siteKeywords = new.siteKeywords)
+            applied++
+        }
+
+        // Laptop games: adding one (or un-ignoring one) is instant; removing or ignoring one waits.
+        val newExtra = new.laptopExtraGames - old.laptopExtraGames
+        if (newExtra.isNotEmpty()) {
+            st = st.copy(laptopExtraGames = st.laptopExtraGames + newExtra, laptopIgnoredGames = st.laptopIgnoredGames - newExtra)
+            newExtra.forEach { g -> pend.removeAll { it.key == "unextra:$g" || it.key == "ignore:$g" } }
+            applied += newExtra.size
+        }
+        for (g in old.laptopExtraGames - new.laptopExtraGames - new.laptopIgnoredGames) {
+            handle("unextra:$g", "0", "1", true, "Stop counting ${g.substringAfterLast('\\')} as a game")
+        }
+        val unIgnored = old.laptopIgnoredGames - new.laptopIgnoredGames
+        if (unIgnored.isNotEmpty()) {
+            st = st.copy(laptopIgnoredGames = st.laptopIgnoredGames - unIgnored)
+            applied += unIgnored.size
+        }
+        for (g in new.laptopIgnoredGames - old.laptopIgnoredGames) {
+            handle("ignore:$g", "0", "1", true, "Not a game: ${g.substringAfterLast('\\')}")
+        }
 
         // Blocking a new app is instant; unblocking one waits.
         val added = new.flagged - old.flagged

@@ -1536,6 +1536,31 @@ class MainActivity : Activity() {
         header("Protection")
         rule("Protect Unrot's settings", if (st.protection) "On" else "Off") { propose(st.copy(protection = !st.protection)) }
 
+        header("Laptop")
+        rule("Time to save your game before it closes", "${st.graceSec}s") {
+            numberDialog("Seconds to save your game", st.graceSec.toString()) { v ->
+                propose(st.copy(graceSec = v.toInt().coerceIn(0, 600)))
+            }
+        }
+        rule("Overtime payback", "${Rules.fmtRatio(st.paybackMult)}×") {
+            numberDialog("Each overtime minute costs this many minutes later", st.paybackMult.toString(), decimal = true) { v ->
+                propose(st.copy(paybackMult = v.coerceIn(1.0, 5.0)))
+            }
+        }
+        for (g in st.laptopExtraGames.sorted()) {
+            val r = row().apply { gravity = Gravity.CENTER_VERTICAL }
+            r.addView(icon(R.drawable.ic_sports_esports, Col.ACCENT, 18))
+            r.addView(text("  " + g.substringAfterLast('\\'), 14.5f), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            r.addView(button("Remove", Ui.Style.GHOST) { propose(st.copy(laptopExtraGames = st.laptopExtraGames - g)) })
+            c.add(r, 4)
+        }
+        for (g in st.laptopIgnoredGames.sorted()) {
+            val r = row().apply { gravity = Gravity.CENTER_VERTICAL }
+            r.addView(text("Not a game: " + g.substringAfterLast('\\'), 14f, Col.MUTED), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            r.addView(button("Count it", Ui.Style.GHOST) { propose(st.copy(laptopIgnoredGames = st.laptopIgnoredGames - g)) })
+            c.add(r, 4)
+        }
+
         // Any rule not placed above still shows up (so new ones are never hidden).
         val placed = setOf(
             "earlyEndPct", "phoneDownPct", "callRewardMin", "callMinMin", "callCooldownH", "stepsUnit", "stepsRewardMin",

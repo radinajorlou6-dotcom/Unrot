@@ -442,6 +442,8 @@ class UnrotService : AccessibilityService() {
             weeklyRecapNotice()
         }
         if (ticks % 60 == 30L) background { Calls.sync(this) }
+        // Your installed apps, so the laptop can pick blocked apps too (sent only when it changes).
+        if (ticks % 21600 == 5L) background { s.phoneAppsJson = installedApps() }
         if (ticks % 900 == 0L) background {
             Calls.sync(this)
             HealthSync.sync(this)
@@ -488,6 +490,24 @@ class UnrotService : AccessibilityService() {
     }
 
     /** Sunday evening: a nudge to look at your week. */
+    /** {"package": {"label": "TikTok", "game": false}, …} for every app with an icon, plus YouTube Shorts. */
+    private fun installedApps(): String {
+        val pm = packageManager
+        val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        val o = org.json.JSONObject()
+        pm.queryIntentActivities(launcher, 0)
+            .map { it.activityInfo.applicationInfo to it.loadLabel(pm).toString() }
+            .filter { it.first.packageName != packageName }
+            .sortedBy { it.first.packageName }
+            .forEach { (ai, label) ->
+                o.put(ai.packageName.replace('.', ','), org.json.JSONObject()
+                    .put("label", label)
+                    .put("game", ai.category == android.content.pm.ApplicationInfo.CATEGORY_GAME))
+            }
+        o.put(Settings.SHORTS_KEY.replace('.', ','), org.json.JSONObject().put("label", Settings.SHORTS_LABEL).put("game", false))
+        return o.toString()
+    }
+
     private fun weeklyRecapNotice() {
         val now = java.time.LocalDateTime.now()
         if (now.dayOfWeek != java.time.DayOfWeek.SUNDAY || now.hour < 19) return

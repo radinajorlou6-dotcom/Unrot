@@ -31,6 +31,12 @@ object Sync {
                 runCatching { JSONObject(cmd) }.getOrNull()?.let { Ledger.applyCommand(s, it) }
                 http("DELETE", cmdUrl, null)
             }
+            syncRules(s)
+            // Your installed apps, so blocked apps can be picked from the laptop too.
+            if (s.phoneAppsJson.isNotEmpty() && s.phoneAppsJson != s.phoneAppsSent) {
+                http("PUT", base(s) + "/phoneApps.json", s.phoneAppsJson)
+                s.phoneAppsSent = s.phoneAppsJson
+            }
             val st = Rules.current(s)
             val mine = JSONObject()
                 .put("name", "phone")
@@ -61,6 +67,35 @@ object Sync {
             s.lastSyncError = e.message ?: e.javaClass.simpleName
             false
         }
+    }
+
+    /**
+     * One set of rules for both devices: whichever changed them last wins (every change already went
+     * through the 24-hour wait on the device where it was made). The very first time, they're merged.
+     */
+    private fun syncRules(s: Store) {
+        val url = base(s) + "/rules.json"
+        val raw = http("GET", url, null).trim()
+        val remote = if (raw.isEmpty() || raw == "null") null else runCatching { JSONObject(raw) }.getOrNull()
+        val push: Boolean
+        if (remote == null) {
+            push = true
+        } else if (!s.rulesSynced) {
+            Rules.mergeFirst(s, remote)
+            push = true
+        } else {
+            val theirs = remote.optLong("updated")
+            push = when {
+                theirs > s.rulesUpdated -> { Rules.adopt(s, remote); false }
+                s.rulesUpdated > theirs -> true
+                else -> false
+            }
+        }
+        if (push) {
+            if (s.rulesUpdated == 0L) s.rulesUpdated = System.currentTimeMillis()
+            http("PUT", url, Rules.sharedDoc(s).toString())
+        }
+        s.rulesSynced = true
     }
 
     /** Blocking. Sends a pause/resume/finish to the device running [sess]. */

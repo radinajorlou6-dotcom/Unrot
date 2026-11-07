@@ -202,8 +202,9 @@ public static class Games
     public static bool IsGame(string path)
     {
         if (string.IsNullOrEmpty(path)) return false;
-        if (Store.S.IgnoredGames.Any(g => Rules.Same(g, path))) return false;
-        if (Store.S.ExtraGames.Any(g => Rules.Same(g, path))) return true;
+        var st = Rules.Current();
+        if (st.LaptopIgnoredGames.Any(g => Rules.Same(g, path))) return false;
+        if (st.LaptopExtraGames.Any(g => Rules.Same(g, path))) return true;
         var p = path.ToLowerInvariant();
         var file = Path.GetFileName(p);
         if (KnownGameExes.Contains(file)) return true;
@@ -355,7 +356,7 @@ public static class Games
             if (pid == 0 || pid == (uint)Environment.ProcessId) continue;
             var name = ProcName((int)pid)?.ToLowerInvariant();
             if (name != null && IsFullScreen(hwnd) && !NeverGame.Contains(name) && !Browsers.Contains(name) &&
-                !Store.S.IgnoredGames.Any(g => Rules.Same(Path.GetFileName(g), name)))
+                !Rules.Current().LaptopIgnoredGames.Any(g => Rules.Same(Path.GetFileName(g), name)))
             {
                 LastGameHwnd = hwnd;
                 return ((int)pid, name);
@@ -372,6 +373,7 @@ public static class Games
     public static List<(IntPtr Hwnd, BlockedSite Site)> VisibleSites()
     {
         var found = new List<(IntPtr, BlockedSite)>();
+        var sites = Rules.Current().Sites;
         foreach (var hwnd in ShownWindows())
         {
             GetWindowThreadProcessId(hwnd, out var pid);
@@ -382,7 +384,7 @@ public static class Games
             GetWindowText(hwnd, sb, sb.Capacity);
             var title = sb.ToString();
             if (title.Length == 0 || SearchPages.Any(title.Contains)) continue;
-            foreach (var site in Store.S.Settings.Sites)
+            foreach (var site in sites)
             {
                 var keys = (site.Keywords ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries);
                 if (keys.Any(k => title.Contains(k, StringComparison.OrdinalIgnoreCase)))

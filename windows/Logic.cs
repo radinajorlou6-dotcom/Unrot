@@ -50,10 +50,10 @@ public static class Ledger
         return list;
     }
 
-    static long Num(JsonElement e, string key) =>
+    public static long Num(JsonElement e, string key) =>
         e.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.Number ? (long)v.GetDouble() : 0;
 
-    static string Str(JsonElement e, string key, string d) =>
+    public static string Str(JsonElement e, string key, string d) =>
         e.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : d;
 
     public static long Balance() => Store.S.EarnedSec - Store.S.SpentSec + Remotes().Sum(r => r.Earned - r.Spent);
@@ -549,149 +549,6 @@ public static class Ledger
         r == Math.Floor(r) ? ((long)r).ToString(CultureInfo.InvariantCulture) : r.ToString("0.0", CultureInfo.InvariantCulture);
 }
 
-/// <summary>Stricter changes apply now; looser ones wait 24 hours unless the PIN unlocked Unrot.</summary>
-public static class Rules
-{
-    public const long DelayMs = 24L * 60 * 60 * 1000;
-
-    public static Settings Current()
-    {
-        var due = Store.S.Pending.Where(p => p.ApplyAt <= Store.Now).ToList();
-        if (due.Count > 0)
-        {
-            foreach (var p in due)
-            {
-                Apply(p.Key, p.Value);
-                Store.S.Pending.Remove(p);
-                Store.AddLog("Rule change kicked in: " + p.Label);
-            }
-            Store.Save();
-        }
-        return Store.S.Settings;
-    }
-
-    static void Apply(string key, string v)
-    {
-        var s = Store.S.Settings;
-        switch (key)
-        {
-            case "focusRatio": s.FocusRatio = double.Parse(v, CultureInfo.InvariantCulture); break;
-            case "maxBankMin": s.MaxBankMin = int.Parse(v); break;
-            case "graceSec": s.GraceSec = int.Parse(v); break;
-            case "protection": s.Protection = bool.Parse(v); break;
-            case "engagingCostPct": s.EngagingCostPct = int.Parse(v); break;
-            case "earlyEndPct": s.EarlyEndPct = int.Parse(v); break;
-            case "freeRatio": s.FreeRatio = double.Parse(v, CultureInfo.InvariantCulture); break;
-            case "paybackMult": s.PaybackMult = double.Parse(v, CultureInfo.InvariantCulture); break;
-            case "dailyCapMin": s.DailyCapMin = int.Parse(v); break;
-            default:
-                if (key.StartsWith("ignore:")) Store.S.IgnoredGames.Add(key["ignore:".Length..]);
-                else if (key.StartsWith("unextra:")) Store.S.ExtraGames.RemoveAll(g => Same(g, key["unextra:".Length..]));
-                else if (key.StartsWith("unsite:")) s.Sites.RemoveAll(x => Same(x.Domain, key["unsite:".Length..]));
-                else if (key.StartsWith("halfsite:"))
-                {
-                    var site = s.Sites.FirstOrDefault(x => Same(x.Domain, key["halfsite:".Length..]));
-                    if (site != null) site.Half = true;
-                }
-                break;
-        }
-    }
-
-    public static bool Same(string a, string b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
-
-    /// <summary>Returns true if applied now, false if it was queued for 24h.</summary>
-    static bool Change(string key, string value, bool looser, string label)
-    {
-        Store.S.Pending.RemoveAll(p => p.Key == key);
-        if (looser && !Pin.Unlocked)
-        {
-            Store.S.Pending.Add(new PendingChange { Key = key, Value = value, ApplyAt = Store.Now + DelayMs, Label = label });
-            Store.Save();
-            return false;
-        }
-        Apply(key, value);
-        Store.Save();
-        return true;
-    }
-
-    public static int ProposeSettings(double focusRatio, int maxBankMin, int graceSec, bool protection, int engagingPct, int earlyEndPct)
-    {
-        var old = Current();
-        int delayed = 0;
-        if (earlyEndPct != old.EarlyEndPct && !Change("earlyEndPct", earlyEndPct.ToString(),
-                earlyEndPct > old.EarlyEndPct, $"Early-end pay → {earlyEndPct}%")) delayed++;
-        if (engagingPct != old.EngagingCostPct && !Change("engagingCostPct", engagingPct.ToString(),
-                engagingPct < old.EngagingCostPct, $"Games & movies cost → {engagingPct}%")) delayed++;
-        if (focusRatio != old.FocusRatio && !Change("focusRatio", focusRatio.ToString(CultureInfo.InvariantCulture),
-                focusRatio < old.FocusRatio, $"Lock-in ratio → {Ledger.FmtRatio(focusRatio)}:1")) delayed++;
-        if (maxBankMin != old.MaxBankMin && !Change("maxBankMin", maxBankMin.ToString(),
-                maxBankMin > old.MaxBankMin, $"Max saved time → {maxBankMin} min")) delayed++;
-        if (graceSec != old.GraceSec && !Change("graceSec", graceSec.ToString(),
-                graceSec > old.GraceSec, $"Save-your-game warning → {graceSec}s")) delayed++;
-        if (protection != old.Protection && !Change("protection", protection.ToString(),
-                !protection, $"Protection → {(protection ? "on" : "off")}")) delayed++;
-        return delayed;
-    }
-
-    public static void AddGame(string path)
-    {
-        Store.S.IgnoredGames.RemoveAll(g => Same(g, path));
-        Store.S.Pending.RemoveAll(p => p.Key == "ignore:" + path || p.Key == "unextra:" + path);
-        if (!Store.S.ExtraGames.Any(g => Same(g, path))) Store.S.ExtraGames.Add(path);
-        Store.AddLog("Now counting " + Path.GetFileName(path) + " as a game");
-    }
-
-    public static bool RemoveGame(string path) =>
-        Change("unextra:" + path, "1", true, "Stop counting " + Path.GetFileName(path));
-
-    public static bool IgnoreGame(string path) =>
-        Change("ignore:" + path, "1", true, "Not a game: " + Path.GetFileName(path));
-
-    /// <summary>The newer rules. Same deal: stricter now, looser in 24h.</summary>
-    public static int ProposeExtra(double freeRatio, double paybackMult, int dailyCapMin)
-    {
-        var old = Current();
-        int delayed = 0;
-        if (freeRatio != old.FreeRatio && !Change("freeRatio", freeRatio.ToString(CultureInfo.InvariantCulture),
-                freeRatio < old.FreeRatio, $"Free lock-in ratio → {Ledger.FmtRatio(freeRatio)}:1")) delayed++;
-        if (paybackMult != old.PaybackMult && !Change("paybackMult", paybackMult.ToString(CultureInfo.InvariantCulture),
-                paybackMult < old.PaybackMult, $"Overtime payback → {paybackMult.ToString("0.##", CultureInfo.InvariantCulture)}×")) delayed++;
-        if (dailyCapMin != old.DailyCapMin && !Change("dailyCapMin", dailyCapMin.ToString(),
-                dailyCapMin > old.DailyCapMin, $"Daily doomscroll limit → {dailyCapMin} min")) delayed++;
-        return delayed;
-    }
-
-    public static void AddSite(string domain, string keywords, bool half)
-    {
-        Store.S.Pending.RemoveAll(p => p.Key == "unsite:" + domain);
-        var existing = Store.S.Settings.Sites.FirstOrDefault(x => Same(x.Domain, domain));
-        if (existing != null) { existing.Keywords = keywords; }
-        else Store.S.Settings.Sites.Add(new BlockedSite { Domain = domain, Keywords = keywords, Half = half });
-        Store.AddLog("Now blocking " + domain);
-    }
-
-    public static bool RemoveSite(string domain) =>
-        Change("unsite:" + domain, "1", true, "Unblock " + domain);
-
-    /// <summary>Full price is instant; making a site cheaper waits.</summary>
-    public static bool ToggleSiteHalf(BlockedSite site)
-    {
-        if (site.Half)
-        {
-            site.Half = false;
-            Store.S.Pending.RemoveAll(p => p.Key == "halfsite:" + site.Domain);
-            Store.Save();
-            return true;
-        }
-        return Change("halfsite:" + site.Domain, "1", true, $"{site.Domain} costs {Store.S.Settings.EngagingCostPct}%");
-    }
-
-    public static void Cancel(string key)
-    {
-        Store.S.Pending.RemoveAll(p => p.Key == key);
-        Store.Save();
-    }
-}
 
 /// <summary>Shares the balance with the phone through Firebase Realtime Database.</summary>
 public static class Sync
@@ -717,6 +574,43 @@ public static class Sync
         r.EnsureSuccessStatusCode();
     }
 
+    static int _runs;
+
+    /// <summary>
+    /// One set of rules for both devices: whichever changed them last wins (every change already went
+    /// through the 24-hour wait on the device where it was made). The very first time, they're merged.
+    /// </summary>
+    static async Task SyncRulesAsync()
+    {
+        var url = $"{Base}/rules.json";
+        var raw = (await Http.GetStringAsync(url)).Trim();
+        bool push;
+        if (raw.Length == 0 || raw == "null") push = true;
+        else
+        {
+            using var doc = JsonDocument.Parse(raw);
+            var remote = doc.RootElement;
+            if (!Store.S.RulesSynced)
+            {
+                Rules.MergeFirst(remote);
+                push = true;
+            }
+            else
+            {
+                var theirs = Ledger.Num(remote, "updated");
+                if (theirs > Store.S.RulesUpdated) { Rules.Adopt(remote); push = false; }
+                else push = Store.S.RulesUpdated > theirs;
+            }
+        }
+        if (push)
+        {
+            if (Store.S.RulesUpdated == 0) Store.S.RulesUpdated = Store.Now;
+            var r = await Http.PutAsync(url, new StringContent(Rules.SharedDoc(), System.Text.Encoding.UTF8, "application/json"));
+            r.EnsureSuccessStatusCode();
+        }
+        Store.S.RulesSynced = true;
+    }
+
     public static async Task<bool> RunAsync()
     {
         if (!Configured) return false;
@@ -729,6 +623,13 @@ public static class Sync
             {
                 try { using var doc = JsonDocument.Parse(cmd); Ledger.ApplyCommand(doc.RootElement); } catch { }
                 await Http.DeleteAsync(cmdUrl);
+            }
+            await SyncRulesAsync();
+            // Your phone's apps (for picking blocked apps here), every ~10 minutes.
+            if (_runs++ % 20 == 0 || string.IsNullOrEmpty(Store.S.PhoneAppsJson))
+            {
+                var apps = (await Http.GetStringAsync($"{Base}/phoneApps.json")).Trim();
+                if (apps.Length > 0 && apps != "null") Store.S.PhoneAppsJson = apps;
             }
             var st = Rules.Current();
             var mine = JsonSerializer.Serialize(new Dictionary<string, object>

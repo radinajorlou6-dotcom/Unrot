@@ -4,7 +4,8 @@ using System.Text.Json;
 
 namespace Unrot;
 
-public class Settings
+/// <summary>How older laptop versions saved rules (read once, then moved into the shared <see cref="Settings"/>).</summary>
+public class LegacySettings
 {
     /// <summary>Minutes locked in per 1 minute of game time.</summary>
     public double FocusRatio { get; set; } = 3;
@@ -88,7 +89,14 @@ public class AppState
     public long SpentSec { get; set; }
     public long FocusUntil { get; set; }
     public long FocusPlannedSec { get; set; }
-    public Settings Settings { get; set; } = new();
+    public LegacySettings Settings { get; set; } = new();
+    /// <summary>Your rules, shared with the phone.</summary>
+    public Unrot.Settings Shared { get; set; }
+    /// <summary>When the rules last changed (here or adopted from the phone), and whether they've been shared yet.</summary>
+    public long RulesUpdated { get; set; }
+    public bool RulesSynced { get; set; }
+    /// <summary>The apps on your phone, as the phone last sent them.</summary>
+    public string PhoneAppsJson { get; set; } = "";
     public List<PendingChange> Pending { get; set; } = new();
     public string PinHash { get; set; } = "";
     public string PinSalt { get; set; } = "";
@@ -165,6 +173,13 @@ public static class Store
         S.Pending ??= new();
         S.ExtraGames ??= new();
         S.IgnoredGames ??= new();
+        if (S.Shared == null)
+        {
+            // One-time: move the old laptop-only rules into the shared format.
+            S.Shared = Unrot.Settings.FromLegacy(S.Settings, S.ExtraGames, S.IgnoredGames);
+            foreach (var p in S.Pending) p.Key = Unrot.Settings.LegacyKey(p.Key);
+        }
+        Rules.Normalize(S.Shared);
         S.Log ??= new();
         S.Days ??= new();
         Save();
@@ -202,6 +217,7 @@ public static class Pin
         Store.S.PinSalt = Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
         Store.S.PinHash = Hash(Store.S.PinSalt, pin);
         Store.S.AdminUntil = 0;
+        Store.S.RulesUpdated = Store.Now; // shared with the phone on the next sync
         Store.Save();
     }
 
