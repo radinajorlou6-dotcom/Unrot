@@ -90,6 +90,7 @@ object HealthSync {
         runCatching { total += workouts(ctx, s); ok = true }
         runCatching { total += steps(ctx, s); ok = true }
         runCatching { total += sleep(ctx, s); ok = true }
+        runCatching { sleepWindows(ctx, s) }
         return if (ok) total else -1
     }
 
@@ -277,6 +278,25 @@ object HealthSync {
         if (add <= 0) return 0
         s.stepsPaidMin = target
         return Ledger.credit(s, st, add * 60, "%,d steps today".format(count))
+    }
+
+    /** Saves the last 2 days of watch sleep (for checking bedtime lock-ins), then settles held bonuses. */
+    private fun sleepWindows(ctx: Context, s: Store) {
+        val now = Instant.now()
+        val records = runBlocking {
+            client(ctx).readRecords(
+                ReadRecordsRequest(
+                    recordType = SleepSessionRecord::class,
+                    timeRangeFilter = TimeRangeFilter.between(now.minus(Duration.ofHours(48)), now),
+                )
+            ).records
+        }
+        val a = org.json.JSONArray()
+        records.sortedBy { it.startTime }.forEach {
+            a.put(org.json.JSONArray().put(it.startTime.toEpochMilli()).put(it.endTime.toEpochMilli()))
+        }
+        s.sleepJson = a.toString()
+        Ledger.resolveBonusHolds(s, Rules.current(s))
     }
 
     /** A morning bonus when your watch says you were asleep by bedtime (6+ hours of sleep). */

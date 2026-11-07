@@ -1,5 +1,6 @@
 package com.radin.unrot
 
+import org.json.JSONArray
 import org.json.JSONObject
 import java.time.LocalDate
 import kotlin.math.max
@@ -281,6 +282,47 @@ object Ledger {
         return base to base * commitBonusPct(st, minutes) / 100
     }
 
+    /**
+     * A lock-in that ran during bedtime might have been slept through, so its bonus waits until your watch's
+     * sleep for that night comes in: awake the whole time → paid; asleep for part of it → no bonus.
+     * No sleep data within 18 hours (watch off) → paid anyway.
+     */
+    private fun holdBonus(s: Store, from: Long, to: Long, bonus: Long, pct: Int, minutes: Long) {
+        val a = runCatching { JSONArray(s.bonusHolds) }.getOrDefault(JSONArray())
+        a.put(JSONObject().put("from", from).put("to", to).put("bonus", bonus).put("pct", pct).put("minutes", minutes))
+        s.bonusHolds = a.toString()
+        s.log("Commitment bonus (+${fmtShort(bonus)}) waits for your watch's sleep data, to check you were awake (it ran during bedtime)")
+    }
+
+    fun sleepWindows(json: String): List<Pair<Long, Long>> = runCatching {
+        val a = JSONArray(json)
+        (0 until a.length()).map { a.getJSONArray(it).let { p -> p.getLong(0) to p.getLong(1) } }
+    }.getOrDefault(emptyList())
+
+    /** Pays or drops held commitment bonuses once sleep data is in. [sleep] = your watch's sleep windows. */
+    fun resolveBonusHolds(s: Store, st: Settings, sleep: List<Pair<Long, Long>> = sleepWindows(s.sleepJson)) = synchronized(s.lock) {
+        val a = runCatching { JSONArray(s.bonusHolds) }.getOrDefault(JSONArray())
+        if (a.length() == 0) return
+        val now = System.currentTimeMillis()
+        val keep = JSONArray()
+        for (i in 0 until a.length()) {
+            val h = a.getJSONObject(i)
+            val from = h.optLong("from")
+            val to = h.optLong("to")
+            val asleep = sleep.any { (ss, se) -> min(se, to) - max(ss, from) >= 10 * 60_000L }
+            val dataIn = sleep.any { (_, se) -> se >= to }
+            when {
+                asleep -> s.log("No commitment bonus: your watch says you were asleep during that ${h.optLong("minutes")}-min lock-in")
+                dataIn || now - to > 18 * 3_600_000L -> credit(
+                    s, st, h.optLong("bonus"),
+                    "commitment bonus (+${h.optInt("pct")}% for finishing ${h.optLong("minutes")} min; you were awake)", "lockin",
+                )
+                else -> keep.put(h)
+            }
+        }
+        s.bonusHolds = keep.toString()
+    }
+
     /** Pause you can take on a lock-in this long and still get the bonus. */
     fun pauseAllowanceMin(st: Settings, plannedSec: Long): Long = st.n("commitPauseMin") * plannedSec / 3600
 
@@ -497,8 +539,7 @@ object Ledger {
             when {
                 pausedMs > allowMin * 60_000L ->
                     s.log("No commitment bonus: paused ${pausedMs / 60_000} min (up to $allowMin allowed)")
-                ranIntoBedtime(st, startedAt, System.currentTimeMillis()) ->
-                    s.log("No commitment bonus: that lock-in ran into bedtime")
+                ranIntoBedtime(st, startedAt, System.currentTimeMillis()) -> holdBonus(s, startedAt, System.currentTimeMillis(), bonus, pct, planned / 60)
                 else -> pay += credit(s, st, bonus, "commitment bonus (+$pct% for finishing ${planned / 60} min)", "lockin")
             }
         }

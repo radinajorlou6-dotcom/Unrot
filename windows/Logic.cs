@@ -9,7 +9,7 @@ public static class Ledger
     public record Remote(string Id, string Name, long Earned, long Spent, long FocusUntil, bool FocusFree,
         string DoomDay, long DoomSec, string DoomPrevDay, long DoomPrevSec, double RateNow = 0, long Updated = 0,
         long FocusId = 0, long FocusStart = 0, long FocusPlanned = 0, long FocusPaused = 0, double FocusRatio = 0, int EarlyPct = 50,
-        WeekTotals Week = null)
+        WeekTotals Week = null, List<(long Start, long End)> Sleep = null)
     {
         public long DoomOn(string day) => day == DoomDay ? DoomSec : day == DoomPrevDay ? DoomPrevSec : 0;
     }
@@ -40,13 +40,24 @@ public static class Ledger
                         Num(p.Value, "focusId"), Num(p.Value, "focusStart"), Num(p.Value, "focusPlanned"), Num(p.Value, "focusPaused"),
                         p.Value.TryGetProperty("focusRatio", out var fr) && fr.ValueKind == JsonValueKind.Number ? fr.GetDouble() : 0,
                         p.Value.TryGetProperty("earlyPct", out var ep) && ep.ValueKind == JsonValueKind.Number ? (int)ep.GetDouble() : 50,
-                        p.Value.TryGetProperty("week", out var wk) && wk.ValueKind == JsonValueKind.Object ? WeekTotals.From(wk) : null));
+                        p.Value.TryGetProperty("week", out var wk) && wk.ValueKind == JsonValueKind.Object ? WeekTotals.From(wk) : null,
+                        ReadSleep(p.Value)));
                 }
             }
         }
         catch { }
         _cacheRaw = raw;
         _cache = list;
+        return list;
+    }
+
+    static List<(long Start, long End)> ReadSleep(JsonElement d)
+    {
+        if (!d.TryGetProperty("sleep", out var a) || a.ValueKind != JsonValueKind.Array) return null;
+        var list = new List<(long, long)>();
+        foreach (var w in a.EnumerateArray())
+            if (w.ValueKind == JsonValueKind.Array && w.GetArrayLength() == 2)
+                list.Add(((long)w[0].GetDouble(), (long)w[1].GetDouble()));
         return list;
     }
 
@@ -256,6 +267,63 @@ public static class Ledger
     {
         var b = (long)(minutes * 60L / st.FocusRatio);
         return (b, b * CommitBonusPct(st, minutes) / 100);
+    }
+
+    /// <summary>
+    /// A lock-in that ran during bedtime might have been slept through, so its bonus waits until your watch's
+    /// sleep for that night comes in (from the phone): awake the whole time → paid; asleep for part → no bonus.
+    /// No sleep data within 18 hours → paid anyway.
+    /// </summary>
+    static void HoldBonus(long from, long to, long bonus, int pct, long minutes)
+    {
+        Store.S.BonusHolds.Add(new BonusHold { From = from, To = to, Bonus = bonus, Pct = pct, Minutes = minutes });
+        Store.AddLog($"Commitment bonus (+{FmtShort(bonus)}) waits for your watch's sleep data, to check you were awake (it ran during bedtime)");
+    }
+
+    /// <summary>Your watch's sleep windows, as the phone last sent them.</summary>
+    static List<(long Start, long End)> PhoneSleep() =>
+        Remotes().Where(r => r.Sleep != null).SelectMany(r => r.Sleep).ToList();
+
+    public static void ResolveBonusHolds()
+    {
+        if (Store.S.BonusHolds.Count == 0) return;
+        var sleep = PhoneSleep();
+        foreach (var h in Store.S.BonusHolds.ToList())
+        {
+            var asleep = sleep.Any(w => Math.Min(w.End, h.To) - Math.Max(w.Start, h.From) >= 10 * 60_000L);
+            var dataIn = sleep.Any(w => w.End >= h.To);
+            if (asleep)
+                Store.AddLog($"No commitment bonus: your watch says you were asleep during that {h.Minutes}-min lock-in");
+            else if (dataIn || Store.Now - h.To > 18 * 3_600_000L)
+                Credit(h.Bonus, $"commitment bonus (+{h.Pct}% for finishing {h.Minutes} min; you were awake)", "lockin");
+            else continue;
+            Store.S.BonusHolds.Remove(h);
+        }
+        Store.Save();
+    }
+
+    /// <summary>
+    /// Build 34 skipped the bonus outright for lock-ins that ran into bedtime. Those (from the last 2 days)
+    /// get the watch check instead. Runs once.
+    /// </summary>
+    public static void RecoverBedtimeBonusesOnce()
+    {
+        if (Store.S.BedtimeBonusRecovered) return;
+        Store.S.BedtimeBonusRecovered = true;
+        var st = Rules.Current();
+        var log = Store.S.Log.ToList();
+        for (var i = 0; i < log.Count; i++)
+        {
+            var e = log[i];
+            if (e.Text != "No commitment bonus: that lock-in ran into bedtime" || Store.Now - e.Ts > 48 * 3_600_000L) continue;
+            var paid = log.Skip(i + 1).Take(3).FirstOrDefault(x => x.Text.Contains("· locked in ") && Math.Abs(x.Ts - e.Ts) < 120_000);
+            var m = paid == null ? null : System.Text.RegularExpressions.Regex.Match(paid.Text, @"locked in (\d+) min");
+            if (m == null || !m.Success) continue;
+            var minutes = int.Parse(m.Groups[1].Value);
+            var (_, bonus) = CommitPay(st, minutes);
+            if (bonus > 0) HoldBonus(e.Ts - minutes * 60_000L, e.Ts, bonus, CommitBonusPct(st, minutes), minutes);
+        }
+        Store.Save();
     }
 
     /// <summary>Pause you can take on a lock-in this long and still get the bonus.</summary>
@@ -516,7 +584,7 @@ public static class Ledger
             var pct = CommitBonusPct(st, (int)(planned / 60));
             var allow = PauseAllowanceMin(st, planned);
             if (pausedMs > allow * 60_000) Store.AddLog($"No commitment bonus: paused {pausedMs / 60_000} min (up to {allow} allowed)");
-            else if (RanIntoBedtime(st, startedAt, Store.Now)) Store.AddLog("No commitment bonus: that lock-in ran into bedtime");
+            else if (RanIntoBedtime(st, startedAt, Store.Now)) HoldBonus(startedAt, Store.Now, bonus, pct, planned / 60);
             else pay += Credit(bonus, $"commitment bonus (+{pct}% for finishing {planned / 60} min)", "lockin");
         }
         Store.S.LastEndedPaid = pay;
@@ -731,6 +799,8 @@ public static class Sync
             Store.S.RemoteJson = all == "null" || all.Length == 0 ? "{}" : all;
             Store.S.LastSyncTs = Store.Now;
             Store.S.LastSyncError = rulesErr ?? "";
+            Ledger.RecoverBedtimeBonusesOnce();
+            Ledger.ResolveBonusHolds();
             Store.Save();
             return true;
         }

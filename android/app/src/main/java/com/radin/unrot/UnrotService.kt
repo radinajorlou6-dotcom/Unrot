@@ -449,6 +449,8 @@ class UnrotService : AccessibilityService() {
             weeklyRecapNotice()
         }
         if (ticks % 60 == 30L) background { Calls.sync(this) }
+        // Held commitment bonuses get paid after 18h even without sleep data.
+        if (ticks % 600 == 15L) Ledger.resolveBonusHolds(s, st)
         // Your installed apps, so the laptop can pick blocked apps too (sent only when it changes).
         if (ticks % 21600 == 5L) background { s.phoneAppsJson = installedApps() }
         if (ticks % 900 == 0L) background {

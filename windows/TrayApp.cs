@@ -213,6 +213,8 @@ public class TrayApp : ApplicationContext
 
         // Every 10s during a lock-in (so pause/finish from the phone lands fast), else every 30s.
         if (_ticks % 30 == 0 || (_ticks % 10 == 0 && Ledger.FocusActive)) _ = SyncNow();
+        // Held commitment bonuses get paid after 18h even without the phone's sleep data.
+        if (_ticks % 600 == 15) Ledger.ResolveBonusHolds();
     }
 
     /// <summary>Time you can actually use on what's showing: balance, and the daily limit for social sites.</summary>

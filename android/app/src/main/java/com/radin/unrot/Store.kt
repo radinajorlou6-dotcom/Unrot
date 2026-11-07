@@ -168,6 +168,14 @@ class Store private constructor(ctx: Context) {
     var focusId: Long
         get() = long("focusId")
         set(v) = putLong("focusId", v)
+    /** Sleep from your watch, last 2 days: [[startMs, endMs], …]. Shared with the laptop. */
+    var sleepJson: String
+        get() = str("sleepJson").ifEmpty { "[]" }
+        set(v) = putStr("sleepJson", v)
+    /** Commitment bonuses waiting for sleep data: [{from, to, bonus, pct, minutes}, …]. */
+    var bonusHolds: String
+        get() = str("bonusHolds").ifEmpty { "[]" }
+        set(v) = putStr("bonusHolds", v)
     /** How long the running lock-in has been paused in total (ms). */
     var focusPausedTotal: Long
         get() = long("focusPausedTotal")

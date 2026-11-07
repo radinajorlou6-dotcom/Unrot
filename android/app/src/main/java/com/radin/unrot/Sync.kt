@@ -57,6 +57,7 @@ object Sync {
                 .put("earlyPct", st.n("earlyEndPct"))
                 .put("rateNow", UnrotService.currentRate)
                 .put("week", Recap.totals(s))
+                .put("sleep", org.json.JSONArray(s.sleepJson))
                 .put("updated", System.currentTimeMillis())
             http("PUT", base(s) + "/devices/" + s.deviceId + ".json", mine.toString())
             val all = http("GET", base(s) + "/devices.json", null)

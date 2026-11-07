@@ -5,6 +5,15 @@ using System.Text.Json;
 namespace Unrot;
 
 /// <summary>How older laptop versions saved rules (read once, then moved into the shared <see cref="Settings"/>).</summary>
+public class BonusHold
+{
+    public long From { get; set; }
+    public long To { get; set; }
+    public long Bonus { get; set; }
+    public int Pct { get; set; }
+    public long Minutes { get; set; }
+}
+
 public class LegacySettings
 {
     /// <summary>Minutes locked in per 1 minute of game time.</summary>
@@ -117,6 +126,9 @@ public class AppState
     public long FocusId { get; set; }
     /// <summary>When the running lock-in was paused (0 = not paused).</summary>
     public long FocusPausedAt { get; set; }
+    /// <summary>Commitment bonuses waiting for the phone's sleep data (lock-ins that ran during bedtime).</summary>
+    public List<BonusHold> BonusHolds { get; set; } = new();
+    public bool BedtimeBonusRecovered { get; set; }
     /// <summary>How long the running lock-in has been paused in total (ms).</summary>
     public long FocusPausedTotal { get; set; }
     /// <summary>The last lock-in that ended here and what it paid (-1 = parked for review).</summary>
@@ -182,6 +194,7 @@ public static class Store
             foreach (var p in S.Pending) p.Key = Unrot.Settings.LegacyKey(p.Key);
         }
         Rules.Normalize(S.Shared);
+        S.BonusHolds ??= new();
         S.Log ??= new();
         S.Days ??= new();
         Save();
