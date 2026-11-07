@@ -160,7 +160,7 @@ public static class Store
             try { File.Copy(FilePath, FilePath + ".broken", true); } catch { }
             S = new AppState();
         }
-        S.Settings ??= new Settings();
+        S.Settings ??= new LegacySettings();
         S.Settings.Sites ??= BlockedSite.Defaults();
         if (!S.MovieSitesAdded)
         {
