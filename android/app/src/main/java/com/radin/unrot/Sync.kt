@@ -31,7 +31,8 @@ object Sync {
                 runCatching { JSONObject(cmd) }.getOrNull()?.let { Ledger.applyCommand(s, it) }
                 http("DELETE", cmdUrl, null)
             }
-            syncRules(s)
+            // Rules sync problems are reported but don't stop your balance from syncing.
+            val rulesErr = runCatching { syncRules(s) }.exceptionOrNull()?.let { "Rules: " + (it.message ?: it.javaClass.simpleName) }
             // Your installed apps, so blocked apps can be picked from the laptop too.
             if (s.phoneAppsJson.isNotEmpty() && s.phoneAppsJson != s.phoneAppsSent) {
                 http("PUT", base(s) + "/phoneApps.json", s.phoneAppsJson)
@@ -61,7 +62,7 @@ object Sync {
             val all = http("GET", base(s) + "/devices.json", null)
             s.remoteJson = if (all.trim() == "null") "{}" else all
             s.lastSyncTs = System.currentTimeMillis()
-            s.lastSyncError = ""
+            s.lastSyncError = rulesErr ?: ""
             true
         } catch (e: Exception) {
             s.lastSyncError = e.message ?: e.javaClass.simpleName
@@ -82,6 +83,7 @@ object Sync {
             push = true
         } else if (!s.rulesSynced) {
             Rules.mergeFirst(s, remote)
+            s.rulesSynced = true // merged once; from now on it's just "newest wins"
             push = true
         } else {
             val theirs = remote.optLong("updated")
@@ -112,15 +114,43 @@ object Sync {
             if (body != null) {
                 c.doOutput = true
                 c.setRequestProperty("Content-Type", "application/json")
-                c.outputStream.use { it.write(body.toByteArray()) }
+                c.outputStream.use { it.write(FbKeys.encode(body).toByteArray()) }
             }
             val code = c.responseCode
             val stream = if (code in 200..299) c.inputStream else c.errorStream
             val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
             if (code !in 200..299) throw RuntimeException("HTTP $code ${text.take(120)}")
-            return text
+            return FbKeys.decode(text)
         } finally {
             c.disconnect()
         }
+    }
+}
+
+/**
+ * Firebase doesn't allow . $ # [ ] / in key names (a site like "learn.uwaterloo.ca" as a key gets a
+ * 400 Bad Request), so keys are escaped on the way up and unescaped on the way down. Same on the laptop.
+ */
+object FbKeys {
+    private val MAP = listOf("%" to "%25", "." to "%2E", "$" to "%24", "#" to "%23", "[" to "%5B", "]" to "%5D", "/" to "%2F")
+
+    private fun enc(k: String) = MAP.fold(k) { acc, (raw, esc) -> acc.replace(raw, esc) }
+    private fun dec(k: String) = if ('%' !in k) k else MAP.asReversed().fold(k) { acc, (raw, esc) -> acc.replace(esc, raw, ignoreCase = true) }
+
+    fun encode(json: String): String = transform(json, ::enc)
+    fun decode(json: String): String = if (json.isBlank() || json.trim() == "null") json else transform(json, ::dec)
+
+    private fun transform(json: String, key: (String) -> String): String = runCatching {
+        when (val v = org.json.JSONTokener(json).nextValue()) {
+            is JSONObject -> walk(v, key).toString()
+            is org.json.JSONArray -> walk(v, key).toString()
+            else -> json
+        }
+    }.getOrDefault(json)
+
+    private fun walk(v: Any?, key: (String) -> String): Any? = when (v) {
+        is JSONObject -> JSONObject().also { out -> v.keys().forEach { k -> out.put(key(k), walk(v.get(k), key)) } }
+        is org.json.JSONArray -> org.json.JSONArray().also { out -> for (i in 0 until v.length()) out.put(walk(v.get(i), key)) }
+        else -> v
     }
 }

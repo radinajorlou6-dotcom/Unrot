@@ -628,12 +628,24 @@ public static class Sync
     /// <summary>Sends a pause/resume/finish to the device running <paramref name="sess"/>.</summary>
     public static async Task SendCommandAsync(Ledger.Session sess, Dictionary<string, object> cmd)
     {
-        var r = await Http.PutAsync($"{Base}/cmd/{sess.DeviceId}.json",
-            new StringContent(JsonSerializer.Serialize(cmd), System.Text.Encoding.UTF8, "application/json"));
-        r.EnsureSuccessStatusCode();
+        await PutAsync($"{Base}/cmd/{sess.DeviceId}.json", JsonSerializer.Serialize(cmd));
     }
 
     static int _runs;
+
+    /// <summary>GET from Firebase, with key names decoded (see <see cref="FbKeys"/>).</summary>
+    static async Task<string> GetAsync(string url) => FbKeys.Decode((await Http.GetStringAsync(url)).Trim());
+
+    /// <summary>PUT to Firebase, with key names made safe for it. Errors include Firebase's reason.</summary>
+    static async Task PutAsync(string url, string json)
+    {
+        var r = await Http.PutAsync(url, new StringContent(FbKeys.Encode(json), System.Text.Encoding.UTF8, "application/json"));
+        if (!r.IsSuccessStatusCode)
+        {
+            var why = (await r.Content.ReadAsStringAsync()).Trim();
+            throw new Exception($"{(int)r.StatusCode} {r.StatusCode}{(why.Length > 0 ? ": " + why[..Math.Min(140, why.Length)] : "")}");
+        }
+    }
 
     /// <summary>
     /// One set of rules for both devices: whichever changed them last wins (every change already went
@@ -642,7 +654,7 @@ public static class Sync
     static async Task SyncRulesAsync()
     {
         var url = $"{Base}/rules.json";
-        var raw = (await Http.GetStringAsync(url)).Trim();
+        var raw = await GetAsync(url);
         bool push;
         if (raw.Length == 0 || raw == "null") push = true;
         else
@@ -652,6 +664,7 @@ public static class Sync
             if (!Store.S.RulesSynced)
             {
                 Rules.MergeFirst(remote);
+                Store.S.RulesSynced = true; // merged once; from now on it's just "newest wins"
                 push = true;
             }
             else
@@ -664,8 +677,7 @@ public static class Sync
         if (push)
         {
             if (Store.S.RulesUpdated == 0) Store.S.RulesUpdated = Store.Now;
-            var r = await Http.PutAsync(url, new StringContent(Rules.SharedDoc(), System.Text.Encoding.UTF8, "application/json"));
-            r.EnsureSuccessStatusCode();
+            await PutAsync(url, Rules.SharedDoc());
         }
         Store.S.RulesSynced = true;
     }
@@ -677,17 +689,20 @@ public static class Sync
         {
             // Pause / resume / finish sent from your phone for a lock-in running here.
             var cmdUrl = $"{Base}/cmd/{Store.S.DeviceId}.json";
-            var cmd = (await Http.GetStringAsync(cmdUrl)).Trim();
+            var cmd = await GetAsync(cmdUrl);
             if (cmd.Length > 0 && cmd != "null")
             {
                 try { using var doc = JsonDocument.Parse(cmd); Ledger.ApplyCommand(doc.RootElement); } catch { }
                 await Http.DeleteAsync(cmdUrl);
             }
-            await SyncRulesAsync();
+            // Rules sync problems are reported but don't stop your balance from syncing.
+            string rulesErr = null;
+            try { await SyncRulesAsync(); }
+            catch (Exception e) { rulesErr = "Rules: " + e.Message; }
             // Your phone's apps (for picking blocked apps here), every ~10 minutes.
             if (_runs++ % 20 == 0 || string.IsNullOrEmpty(Store.S.PhoneAppsJson))
             {
-                var apps = (await Http.GetStringAsync($"{Base}/phoneApps.json")).Trim();
+                var apps = await GetAsync($"{Base}/phoneApps.json");
                 if (apps.Length > 0 && apps != "null") Store.S.PhoneAppsJson = apps;
             }
             var st = Rules.Current();
@@ -711,13 +726,11 @@ public static class Sync
                 ["earlyPct"] = st.EarlyEndPct,
                 ["updated"] = Store.Now,
             });
-            var put = await Http.PutAsync($"{Base}/devices/{Store.S.DeviceId}.json",
-                new StringContent(mine, System.Text.Encoding.UTF8, "application/json"));
-            put.EnsureSuccessStatusCode();
-            var all = await Http.GetStringAsync($"{Base}/devices.json");
-            Store.S.RemoteJson = all.Trim() == "null" ? "{}" : all;
+            await PutAsync($"{Base}/devices/{Store.S.DeviceId}.json", mine);
+            var all = await GetAsync($"{Base}/devices.json");
+            Store.S.RemoteJson = all == "null" || all.Length == 0 ? "{}" : all;
             Store.S.LastSyncTs = Store.Now;
-            Store.S.LastSyncError = "";
+            Store.S.LastSyncError = rulesErr ?? "";
             Store.Save();
             return true;
         }
@@ -725,6 +738,64 @@ public static class Sync
         {
             Store.S.LastSyncError = e.Message;
             return false;
+        }
+    }
+}
+
+/// <summary>
+/// Firebase doesn't allow . $ # [ ] / in key names (a site like "learn.uwaterloo.ca" as a key gets a
+/// 400 Bad Request), so keys are escaped on the way up and unescaped on the way down. Same on the phone.
+/// </summary>
+public static class FbKeys
+{
+    static readonly (string Raw, string Esc)[] Map =
+        { ("%", "%25"), (".", "%2E"), ("$", "%24"), ("#", "%23"), ("[", "%5B"), ("]", "%5D"), ("/", "%2F") };
+
+    static string Enc(string k) { foreach (var (r, e) in Map) k = k.Replace(r, e); return k; }
+
+    static string Dec(string k)
+    {
+        if (!k.Contains('%')) return k;
+        for (var i = Map.Length - 1; i >= 0; i--) k = k.Replace(Map[i].Esc, Map[i].Raw, StringComparison.OrdinalIgnoreCase);
+        return k;
+    }
+
+    public static string Encode(string json) => Transform(json, Enc);
+    public static string Decode(string json) => json.Length == 0 || json == "null" ? json : Transform(json, Dec);
+
+    static string Transform(string json, Func<string, string> key)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            using var ms = new MemoryStream();
+            using (var w = new Utf8JsonWriter(ms)) Write(doc.RootElement, w, key);
+            return System.Text.Encoding.UTF8.GetString(ms.ToArray());
+        }
+        catch { return json; }
+    }
+
+    static void Write(JsonElement e, Utf8JsonWriter w, Func<string, string> key)
+    {
+        switch (e.ValueKind)
+        {
+            case JsonValueKind.Object:
+                w.WriteStartObject();
+                foreach (var p in e.EnumerateObject())
+                {
+                    w.WritePropertyName(key(p.Name));
+                    Write(p.Value, w, key);
+                }
+                w.WriteEndObject();
+                break;
+            case JsonValueKind.Array:
+                w.WriteStartArray();
+                foreach (var x in e.EnumerateArray()) Write(x, w, key);
+                w.WriteEndArray();
+                break;
+            default:
+                e.WriteTo(w);
+                break;
         }
     }
 }
