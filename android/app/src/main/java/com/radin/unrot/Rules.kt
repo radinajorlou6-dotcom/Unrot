@@ -485,6 +485,8 @@ object NumRules {
         NumRule("phoneDownPct", "Phone-down bonus (screen off all lock-in)", 20, 0, 100, true, "%"),
         NumRule("engagingCostPct", "Games & movies cost (% of normal)", 50, 10, 100, false, "%"),
         NumRule("earlyEndPct", "Pay for ending a lock-in early (% of normal)", 50, 0, 100, true, "%"),
+        NumRule("commitBonusMaxPct", "Commitment bonus for a 3h+ lock-in you finish (shorter ones get less)", 50, 0, 100, true, "%"),
+        NumRule("commitPauseMin", "Pause allowed per hour and still get the commitment bonus", 10, 0, 60, true, "min"),
         NumRule("introWaitSec", "Wait before \"Continue\" on the opening card", 15, 0, 300, false, "s"),
         NumRule("callRewardMin", "Minutes earned per family call", 10, 1, 60, true, "min"),
         NumRule("callMinMin", "Shortest call that counts", 5, 1, 60, false, "min"),

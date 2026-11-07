@@ -89,6 +89,8 @@ class UnrotService : AccessibilityService() {
     private var lastGuard = 0L
     private var ticks = 0L
     private var continuousSec = 0L
+    /** Which full-price apps the current non-stop stretch was spent in (key → seconds), for the check-in. */
+    private val continuousApps = LinkedHashMap<String, Long>()
     private var nextCheckInAt = Long.MAX_VALUE
     private var lastFlaggedAt = 0L
     private var warnedLow = false
@@ -398,13 +400,18 @@ class UnrotService : AccessibilityService() {
                 s.lastBlockedKey = primary ?: visible.first()
             }
             val shown = primary ?: visible.first()
-            if (primary != null) {
+            // Non-stop scrolling, for the "still glad you're here?" check-in. Only full-price apps count:
+            // a movie or game (or a minute away) ends the stretch, so you never open an app straight into a check-in
+            // for time you spent somewhere else.
+            if (primary != null && primary !in st.halfRate) {
                 if (now - lastFlaggedAt > 60_000) {
                     continuousSec = 0
+                    continuousApps.clear()
                     nextCheckInAt = if (st.checkInMin > 0) st.checkInMin * 60L else Long.MAX_VALUE
                 }
                 lastFlaggedAt = now
                 continuousSec++
+                continuousApps[primary] = (continuousApps[primary] ?: 0L) + 1
                 if (checkInAck) {
                     checkInAck = false
                     nextCheckInAt = continuousSec + (if (st.checkInMin > 0) st.checkInMin * 60L else Long.MAX_VALUE / 2)
@@ -635,6 +642,9 @@ class UnrotService : AccessibilityService() {
             .putExtra(BlockActivity.EXTRA_MODE, mode)
             .putExtra(BlockActivity.EXTRA_PKG, pkg)
             .putExtra(BlockActivity.EXTRA_CONTINUOUS, continuousSec)
+            .putExtra(BlockActivity.EXTRA_CONTINUOUS_APPS,
+                continuousApps.entries.sortedByDescending { it.value }
+                    .joinToString(" · ") { "${Settings.labelOf(this, it.key)} ${maxOf(1L, it.value / 60)} min" })
         runCatching { startActivity(i) }
     }
 

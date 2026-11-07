@@ -212,7 +212,7 @@ public static class Ledger
 
     /// <summary>A running lock-in, here or on another device, with everything needed to show and finish it.</summary>
     public record Session(string DeviceId, string DeviceName, long Id, bool Free, long Start, long Until, long PlannedSec,
-        long PausedAt, double Ratio, int EarlyPct)
+        long PausedAt, double Ratio, int EarlyPct, int BonusPct = 0)
     {
         public bool Local => DeviceId == null;
         public bool Paused => PausedAt > 0;
@@ -227,7 +227,49 @@ public static class Ledger
             return Free ? (long)(done / Ratio) : (long)(done / Ratio * EarlyPct / 100.0);
         }
 
-        public long FullPay => (long)(PlannedSec / Ratio);
+        public long BasePay => (long)(PlannedSec / Ratio);
+        /// <summary>What finishing pays: the lock-in plus its commitment bonus.</summary>
+        public long FullPay => BasePay + BasePay * BonusPct / 100;
+    }
+
+    // ---------------------------------------------------------------- commitment bonus
+    // Committing to a longer lock-in up front pays extra, but only if you finish it (ending early pays the
+    // early-end rate, no bonus). It grows fast early and flattens out, topping out at 3 hours:
+    // 25–44 min: none · 45: +10% · 60: +20% · 90: +30% · 2h: +40% · 3h+: +50% (scaled by commitBonusMaxPct).
+    static readonly (int Min, double Pct)[] BonusCurve = { (45, 10), (60, 20), (120, 40), (180, 50) };
+
+    public static int CommitBonusPct(Settings st, int minutes)
+    {
+        if (minutes < 45) return 0;
+        double raw = 50;
+        if (minutes < 180)
+            for (var i = 0; i < BonusCurve.Length - 1; i++)
+            {
+                var (a, b) = (BonusCurve[i], BonusCurve[i + 1]);
+                if (minutes <= b.Min) { raw = a.Pct + (b.Pct - a.Pct) * (minutes - a.Min) / (b.Min - a.Min); break; }
+            }
+        return (int)Math.Round(raw * st.N("commitBonusMaxPct") / 50.0);
+    }
+
+    /// <summary>What a timed lock-in of this many minutes pays if you finish it: (base, bonus).</summary>
+    public static (long Base, long Bonus) CommitPay(Settings st, int minutes)
+    {
+        var b = (long)(minutes * 60L / st.FocusRatio);
+        return (b, b * CommitBonusPct(st, minutes) / 100);
+    }
+
+    /// <summary>Pause you can take on a lock-in this long and still get the bonus.</summary>
+    public static long PauseAllowanceMin(Settings st, long plannedSec) => st.N("commitPauseMin") * plannedSec / 3600;
+
+    static bool RanIntoBedtime(Settings st, long from, long to)
+    {
+        if (!st.BedtimeOn || from <= 0) return false;
+        for (var t = from; t <= to; t += 60_000)
+        {
+            var lt = DateTimeOffset.FromUnixTimeMilliseconds(t).ToLocalTime();
+            if (st.InBedtime(lt.Hour * 60 + lt.Minute)) return true;
+        }
+        return false;
     }
 
     static Session LocalSession()
@@ -236,7 +278,8 @@ public static class Ledger
         var st = Rules.Current();
         var s = Store.S;
         return new Session(null, "laptop", s.FocusId, s.FocusFree, s.FocusStart, s.FocusUntil, s.FocusPlannedSec, s.FocusPausedAt,
-            s.FocusFree ? st.FreeRatio : st.FocusRatio, st.EarlyEndPct);
+            s.FocusFree ? st.FreeRatio : st.FocusRatio, st.EarlyEndPct,
+            s.FocusFree ? 0 : CommitBonusPct(st, (int)(s.FocusPlannedSec / 60)));
     }
 
     static HashSet<string> Ended() => (Store.S.EndedRemote ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries).ToHashSet();
@@ -244,10 +287,12 @@ public static class Ledger
     static List<Session> RemoteSessions()
     {
         var done = Ended();
+        var st = Rules.Current();
         return Remotes()
             .Where(r => r.FocusUntil > 0 && (r.FocusPaused > 0 || r.FocusUntil > Store.Now) && !done.Contains($"{r.Id}:{r.FocusId}"))
             .Select(r => new Session(r.Id, r.Name, r.FocusId, r.FocusFree, r.FocusStart, r.FocusUntil, r.FocusPlanned, r.FocusPaused,
-                r.FocusRatio > 0 ? r.FocusRatio : r.FocusFree ? 5.0 : 3.0, r.EarlyPct))
+                r.FocusRatio > 0 ? r.FocusRatio : r.FocusFree ? 5.0 : 3.0, r.EarlyPct,
+                r.FocusFree ? 0 : CommitBonusPct(st, (int)(r.FocusPlanned / 60))))
             .ToList();
     }
 
@@ -264,6 +309,7 @@ public static class Ledger
         Store.S.FocusId = Store.Now;
         Store.S.FocusStart = Store.Now;
         Store.S.FocusPausedAt = 0;
+        Store.S.FocusPausedTotal = 0;
     }
 
     public static void StartFocus(int minutes)
@@ -302,6 +348,7 @@ public static class Ledger
         var gap = Math.Max(0, Store.Now - at);
         Store.S.FocusUntil += gap;
         Store.S.FocusStart += gap;
+        Store.S.FocusPausedTotal += gap;
         Store.S.FocusPausedAt = 0;
         Store.AddLog($"Lock-in resumed after {gap / 60_000} min" + (from != null ? $" from your {from}" : ""));
     }
@@ -457,9 +504,21 @@ public static class Ledger
         if (Store.S.FocusUntil == 0 || Store.S.FocusPausedAt > 0 || Store.Now < Store.S.FocusUntil) return -1;
         if (Store.S.FocusFree) { ParkFree(); return NeedsReview; }
         var planned = Store.S.FocusPlannedSec;
+        var pausedMs = Store.S.FocusPausedTotal;
+        var startedAt = Store.S.FocusId;
+        var st = Rules.Current();
         EndSession(0);
         Stat(d => d.Locked += planned);
-        var pay = Credit((long)(planned / Rules.Current().FocusRatio), $"locked in {planned / 60} min");
+        var (basePay, bonus) = CommitPay(st, (int)(planned / 60));
+        var pay = Credit(basePay, $"locked in {planned / 60} min");
+        if (bonus > 0)
+        {
+            var pct = CommitBonusPct(st, (int)(planned / 60));
+            var allow = PauseAllowanceMin(st, planned);
+            if (pausedMs > allow * 60_000) Store.AddLog($"No commitment bonus: paused {pausedMs / 60_000} min (up to {allow} allowed)");
+            else if (RanIntoBedtime(st, startedAt, Store.Now)) Store.AddLog("No commitment bonus: that lock-in ran into bedtime");
+            else pay += Credit(bonus, $"commitment bonus (+{pct}% for finishing {planned / 60} min)", "lockin");
+        }
         Store.S.LastEndedPaid = pay;
         return pay;
     }

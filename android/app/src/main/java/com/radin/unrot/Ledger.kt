@@ -241,6 +241,8 @@ object Ledger {
         val pausedAt: Long,
         val ratio: Double,
         val earlyPct: Int,
+        /** Commitment bonus a timed lock-in pays on top if you finish it (0 for free lock-ins). */
+        val bonusPct: Int = 0,
     ) {
         val local get() = deviceId == null
         val paused get() = pausedAt > 0
@@ -253,7 +255,44 @@ object Ledger {
             val done = keepSec.coerceIn(0L, elapsedSec())
             return if (free) (done / ratio).toLong() else (done / ratio * earlyPct / 100.0).toLong()
         }
-        val fullPay get() = (plannedSec / ratio).toLong()
+        val basePay get() = (plannedSec / ratio).toLong()
+        /** What finishing pays: the lock-in plus its commitment bonus. */
+        val fullPay get() = basePay + basePay * bonusPct / 100
+    }
+
+    // ---- Commitment bonus ----
+    // Committing to a longer lock-in up front pays extra, but only if you finish it (ending early pays the
+    // early-end rate, no bonus). It grows fast early and flattens out, topping out at 3 hours:
+    // 25–44 min: none · 45: +10% · 60: +20% · 90: +30% · 2h: +40% · 3h+: +50% (scaled by commitBonusMaxPct).
+    private val BONUS_CURVE = listOf(45 to 10.0, 60 to 20.0, 120 to 40.0, 180 to 50.0)
+
+    fun commitBonusPct(st: Settings, minutes: Int): Int {
+        if (minutes < 45) return 0
+        val raw = if (minutes >= 180) 50.0 else {
+            val (a, b) = BONUS_CURVE.zipWithNext().first { (_, hi) -> minutes <= hi.first }
+            a.second + (b.second - a.second) * (minutes - a.first) / (b.first - a.first)
+        }
+        return Math.round(raw * st.n("commitBonusMaxPct") / 50.0).toInt()
+    }
+
+    /** What a timed lock-in of [minutes] pays if you finish it: (base, bonus). */
+    fun commitPay(st: Settings, minutes: Int): Pair<Long, Long> {
+        val base = (minutes * 60L / st.focusRatio).toLong()
+        return base to base * commitBonusPct(st, minutes) / 100
+    }
+
+    /** Pause you can take on a lock-in this long and still get the bonus. */
+    fun pauseAllowanceMin(st: Settings, plannedSec: Long): Long = st.n("commitPauseMin") * plannedSec / 3600
+
+    private fun ranIntoBedtime(st: Settings, from: Long, to: Long): Boolean {
+        if (!st.bedtimeOn || from <= 0) return false
+        var t = from
+        while (t <= to) {
+            val lt = java.time.Instant.ofEpochMilli(t).atZone(java.time.ZoneId.systemDefault()).toLocalTime()
+            if (st.inBedtime(lt.hour * 60 + lt.minute)) return true
+            t += 60_000L
+        }
+        return false
     }
 
     private fun localSession(s: Store): Session? {
@@ -262,6 +301,7 @@ object Ledger {
         return Session(
             null, "phone", s.focusId, s.focusFree, s.focusStart, s.focusUntil, s.focusPlannedSec, s.focusPausedAt,
             if (s.focusFree) st.freeRatio else st.focusRatio, st.n("earlyEndPct"),
+            if (s.focusFree) 0 else commitBonusPct(st, (s.focusPlannedSec / 60).toInt()),
         )
     }
 
@@ -270,12 +310,14 @@ object Ledger {
     private fun remoteSessions(s: Store): List<Session> {
         val now = System.currentTimeMillis()
         val done = ended(s)
+        val st = Rules.current(s)
         return remotes(s).filter {
             it.focusUntil > 0 && (it.focusPaused > 0 || it.focusUntil > now) && "${it.id}:${it.focusId}" !in done
         }.map {
             Session(
                 it.id, it.name, it.focusId, it.focusFree, it.focusStart, it.focusUntil, it.focusPlanned, it.focusPaused,
                 if (it.focusRatio > 0) it.focusRatio else if (it.focusFree) 5.0 else 3.0, it.earlyPct,
+                if (it.focusFree) 0 else commitBonusPct(st, (it.focusPlanned / 60).toInt()),
             )
         }
     }
@@ -297,6 +339,7 @@ object Ledger {
         s.focusId = now
         s.focusStart = now
         s.focusPausedAt = 0
+        s.focusPausedTotal = 0
     }
 
     fun startFocus(s: Store, minutes: Int) {
@@ -331,6 +374,7 @@ object Ledger {
         val gap = max(0L, System.currentTimeMillis() - at)
         s.focusUntil = s.focusUntil + gap
         s.focusStart = s.focusStart + gap
+        s.focusPausedTotal = s.focusPausedTotal + gap
         s.focusPausedAt = 0
         s.log("Lock-in resumed after ${gap / 60_000} min" + (from?.let { " from your $it" } ?: ""))
     }
@@ -441,9 +485,23 @@ object Ledger {
             return NEEDS_REVIEW
         }
         val planned = s.focusPlannedSec
+        val pausedMs = s.focusPausedTotal
+        val startedAt = s.focusId
         endSession(s, 0)
         stat("l", planned)
-        val pay = credit(s, st, (planned / st.focusRatio).toLong(), "locked in ${planned / 60} min")
+        val (base, bonus) = commitPay(st, (planned / 60).toInt())
+        var pay = credit(s, st, base, "locked in ${planned / 60} min")
+        if (bonus > 0) {
+            val pct = commitBonusPct(st, (planned / 60).toInt())
+            val allowMin = pauseAllowanceMin(st, planned)
+            when {
+                pausedMs > allowMin * 60_000L ->
+                    s.log("No commitment bonus: paused ${pausedMs / 60_000} min (up to $allowMin allowed)")
+                ranIntoBedtime(st, startedAt, System.currentTimeMillis()) ->
+                    s.log("No commitment bonus: that lock-in ran into bedtime")
+                else -> pay += credit(s, st, bonus, "commitment bonus (+$pct% for finishing ${planned / 60} min)", "lockin")
+            }
+        }
         s.lastFocusPaid = pay
         s.lastEndedPaid = pay
         pay

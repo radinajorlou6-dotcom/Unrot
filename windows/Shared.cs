@@ -28,6 +28,8 @@ public static class NumRules
         new("phoneDownPct", "Phone-down bonus (screen off all lock-in)", 20, 0, 100, true, "%"),
         new("engagingCostPct", "Games & movies cost (% of normal)", 50, 10, 100, false, "%"),
         new("earlyEndPct", "Pay for ending a lock-in early (% of normal)", 50, 0, 100, true, "%"),
+        new("commitBonusMaxPct", "Commitment bonus for a 3h+ lock-in you finish (shorter ones get less)", 50, 0, 100, true, "%"),
+        new("commitPauseMin", "Pause allowed per hour and still get the commitment bonus", 10, 0, 60, true, "min"),
         new("introWaitSec", "Wait before \"Continue\" on the opening card", 15, 0, 300, false, "s"),
         new("callRewardMin", "Minutes earned per family call", 10, 1, 60, true, "min"),
         new("callMinMin", "Shortest call that counts", 5, 1, 60, false, "min"),

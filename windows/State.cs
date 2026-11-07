@@ -117,6 +117,8 @@ public class AppState
     public long FocusId { get; set; }
     /// <summary>When the running lock-in was paused (0 = not paused).</summary>
     public long FocusPausedAt { get; set; }
+    /// <summary>How long the running lock-in has been paused in total (ms).</summary>
+    public long FocusPausedTotal { get; set; }
     /// <summary>The last lock-in that ended here and what it paid (-1 = parked for review).</summary>
     public long LastEndedId { get; set; }
     public long LastEndedPaid { get; set; }

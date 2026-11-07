@@ -168,6 +168,10 @@ class Store private constructor(ctx: Context) {
     var focusId: Long
         get() = long("focusId")
         set(v) = putLong("focusId", v)
+    /** How long the running lock-in has been paused in total (ms). */
+    var focusPausedTotal: Long
+        get() = long("focusPausedTotal")
+        set(v) = putLong("focusPausedTotal", v)
     /** When the running lock-in was paused (0 = not paused). */
     var focusPausedAt: Long
         get() = long("focusPausedAt")

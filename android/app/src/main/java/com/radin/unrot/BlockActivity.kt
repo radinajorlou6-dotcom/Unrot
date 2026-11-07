@@ -20,6 +20,7 @@ class BlockActivity : Activity() {
         const val EXTRA_MODE = "mode"
         const val EXTRA_PKG = "pkg"
         const val EXTRA_CONTINUOUS = "continuous"
+        const val EXTRA_CONTINUOUS_APPS = "continuousApps"
         const val MODE_OUT = "out"
         const val MODE_FOCUS = "focus"
         const val MODE_NIGHT = "night"
@@ -197,7 +198,11 @@ class BlockActivity : Activity() {
                 }
                 MODE_CHECKIN -> {
                     root.addWrap(heroIcon(R.drawable.ic_timer, Col.FIRE), 14)
-                    root.add(title("${continuous / 60} minutes on $name", 30f), 8)
+                    // The stretch can span apps (hopping from TikTok to Instagram doesn't reset it), so say where it went.
+                    val where = i.getStringExtra(EXTRA_CONTINUOUS_APPS).orEmpty()
+                    val oneApp = where.isEmpty() || !where.contains(" · ")
+                    root.add(title(if (oneApp) "${continuous / 60} minutes on $name" else "${continuous / 60} minutes of scrolling", 30f), 8)
+                    if (!oneApp) root.add(text(where, 15f, Col.MUTED), 10)
                     root.add(text("Still glad you're here?", 18f, Col.MUTED), 24)
                     root.add(button("I'm done", Ui.Style.PRIMARY) { goHome() })
                     if (night) nightOptions(root) else dayOptions(root)

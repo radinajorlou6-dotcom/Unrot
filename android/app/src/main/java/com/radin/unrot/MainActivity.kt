@@ -469,6 +469,8 @@ class MainActivity : Activity() {
                     when {
                         sess.paused -> "Paused: the timer's frozen, but blocked apps and sites stay off."
                         sess.free -> "Free lock-in at ${Rules.fmtRatio(sess.ratio)}:1. Stop whenever; you're paid for every minute."
+                        sess.bonusPct > 0 -> "Includes a +${sess.bonusPct}% commitment bonus if you finish it " +
+                            "(pausing up to ${Ledger.pauseAllowanceMin(st, sess.plannedSec)} min is fine; ending early loses it)."
                         else -> "Blocked apps and sites (and laptop games, if synced) are off until it ends."
                     },
                     14f, Col.MUTED,
@@ -497,12 +499,14 @@ class MainActivity : Activity() {
                 }, 0)
             }
             c.add(r, 0)
-            c.add(space(8))
-            c.add(row().apply {
-                addView(icon(R.drawable.ic_mobile_off, Col.BLUE, 18))
-                addView(text("  Keep your screen off for +${st.n("phoneDownPct")}%", 13f, Col.MUTED))
-                gravity = Gravity.CENTER
-            }, 0)
+            if (st.n("phoneDownPct") > 0) {
+                c.add(space(8))
+                c.add(row().apply {
+                    addView(icon(R.drawable.ic_mobile_off, Col.BLUE, 18))
+                    addView(text("  Keep your screen off for +${st.n("phoneDownPct")}%", 13f, Col.MUTED))
+                    gravity = Gravity.CENTER
+                }, 0)
+            }
             return
         }
 
@@ -524,18 +528,32 @@ class MainActivity : Activity() {
                 }
                 tile.addView(title("$m", 30f).apply { gravity = Gravity.CENTER })
                 tile.addView(text("min", 12.5f, Col.MUTED).apply { gravity = Gravity.CENTER })
-                tile.addView(chip("+${Ledger.fmtShort((m * 60 / st.focusRatio).toLong())}", Col.ACCENT).apply {
+                val (base, bonus) = Ledger.commitPay(st, m)
+                tile.addView(chip("+${Ledger.fmtShort(base + bonus)}", Col.ACCENT).apply {
                     (layoutParams as LinearLayout.LayoutParams).apply { topMargin = dp(6); gravity = Gravity.CENTER_HORIZONTAL }
                 })
+                if (bonus > 0) {
+                    tile.addView(text("incl. +${Ledger.commitBonusPct(st, m)}% bonus", 11.5f, Col.GOLD).apply {
+                        gravity = Gravity.CENTER
+                        setPadding(0, dp(4), 0, 0)
+                    })
+                }
                 r.addWeighted(tile, if (m == pair.last()) 0 else 10)
             }
             c.add(r, 10)
         }
         c.add(button("Custom length", Ui.Style.SECONDARY, R.drawable.ic_tune) {
-            val ratio = Rules.current(s).focusRatio
+            val cur = Rules.current(s)
             sliderDialog(
-                "Custom lock-in", "Any length from 25 minutes up to 8 hours.", 480, 120, "Lock in", minMin = 25,
-                describe = { m -> "${minText(m.toLong())} → +${Ledger.fmtShort((m * 60L / ratio).toLong())}" },
+                "Custom lock-in",
+                "Any length from 25 minutes up to 8 hours. Longer commitments earn a bonus if you finish " +
+                    "(up to +${cur.n("commitBonusMaxPct")}% at 3 hours).",
+                480, 120, "Lock in", minMin = 25,
+                describe = { m ->
+                    val (base, bonus) = Ledger.commitPay(cur, m)
+                    "${minText(m.toLong())} → +${Ledger.fmtShort(base + bonus)}" +
+                        if (bonus > 0) "  (+${Ledger.commitBonusPct(cur, m)}%)" else ""
+                },
             ) { m ->
                 Ledger.startFocus(s, m)
                 syncNow()
@@ -827,7 +845,8 @@ class MainActivity : Activity() {
         }
 
         quest(R.drawable.ic_lock, Col.VIOLET, "Lock in", "${Rules.fmtRatio(st.focusRatio)} min → 1",
-            "Timed 25–90 min, or free-form at ${Rules.fmtRatio(st.freeRatio)}:1 that you can stop anytime.") { c ->
+            "Timed 25 min to 8 h (45 min+ earns a commitment bonus, up to +${st.n("commitBonusMaxPct")}% at 3 h, if you finish), " +
+                "or free-form at ${Rules.fmtRatio(st.freeRatio)}:1 that you can stop anytime.") { c ->
             c.add(space(10))
             c.add(button("Start a lock-in", Ui.Style.SECONDARY, R.drawable.ic_play_arrow) { switchTab(TAB_HOME) }, 0)
         }
@@ -1492,6 +1511,8 @@ class MainActivity : Activity() {
             }
         }
         num("earlyEndPct")
+        num("commitBonusMaxPct")
+        num("commitPauseMin")
         num("phoneDownPct")
         rule("Workout ratio", "${Rules.fmtRatio(st.workoutRatio)} : 1") {
             numberDialog("Workout minutes per 1 min earned", st.workoutRatio.toString(), decimal = true) { v ->
@@ -1563,7 +1584,7 @@ class MainActivity : Activity() {
 
         // Any rule not placed above still shows up (so new ones are never hidden).
         val placed = setOf(
-            "earlyEndPct", "phoneDownPct", "callRewardMin", "callMinMin", "callCooldownH", "stepsUnit", "stepsRewardMin",
+            "earlyEndPct", "commitBonusMaxPct", "commitPauseMin", "phoneDownPct", "callRewardMin", "callMinMin", "callCooldownH", "stepsUnit", "stepsRewardMin",
             "stepsCapMin", "sleepBonusMin", "runPrBonusMin", "liftPrBonusMin", "liftPrCapMin", "dailyCapMin",
             "engagingCostPct", "streakTargetMin", "streak3Min", "streak7Min", "streak30Min", "introWaitSec",
         )

@@ -435,6 +435,7 @@ public class MainForm : Form
             col.Controls.Add(L(
                 sess.Paused ? "Paused: the timer's frozen, but games and blocked sites stay off."
                 : sess.Free ? $"Free lock-in at {Ledger.FmtRatio(sess.Ratio)}:1. Stop whenever; you're paid for every minute."
+                : sess.BonusPct > 0 ? $"Includes a +{sess.BonusPct}% commitment bonus if you finish it (pausing up to {Ledger.PauseAllowanceMin(Rules.Current(), sess.PlannedSec)} min is fine; ending early loses it)."
                 : "Games, blocked sites (and your phone's blocked apps) are off until it ends.",
                 10, Theme.Muted, false, c.Inner - 200));
             var btns = Row(col, c.Inner - 200);
@@ -470,14 +471,20 @@ public class MainForm : Form
         var tw = (c.Inner - 44) / 4;
         foreach (var m in new[] { 25, 45, 60, 90 })
         {
-            tiles.Controls.Add(Btn($"{m} min · +{(int)Math.Round(m / st.FocusRatio)}m",
+            var (bp, bb) = Ledger.CommitPay(st, m);
+            tiles.Controls.Add(Btn($"{m} min · +{(bp + bb) / 60}m" + (bb > 0 ? "★" : ""),
                 () => { _app.StartFocus(m); Rebuild(); }, m == 25 ? GameButton.Kind.Primary : GameButton.Kind.Secondary, null, tw));
         }
         var custom = Btn("Custom length", () =>
         {
-            var ratio = Rules.Current().FocusRatio;
-            var m = Prompt.Slider("Custom lock-in", "Any length from 25 minutes up to 8 hours. Arrow keys move it a minute at a time.",
-                480, 120, "Lock in", v => $"{Prompt.MinText(v)} → +{Ledger.FmtShort((long)(v * 60L / ratio))}", minMin: 25);
+            var cur = Rules.Current();
+            var m = Prompt.Slider("Custom lock-in",
+                $"Any length from 25 minutes to 8 hours. Longer commitments earn a bonus if you finish (up to +{cur.N("commitBonusMaxPct")}% at 3 hours).",
+                480, 120, "Lock in", v =>
+                {
+                    var (b0, b1) = Ledger.CommitPay(cur, v);
+                    return $"{Prompt.MinText(v)} → +{Ledger.FmtShort(b0 + b1)}" + (b1 > 0 ? $"  (+{Ledger.CommitBonusPct(cur, v)}%)" : "");
+                }, minMin: 25);
             if (m == null) return;
             _app.StartFocus(m.Value);
             Rebuild();
@@ -486,7 +493,8 @@ public class MainForm : Form
         c.Controls.Add(custom);
         c.Controls.Add(Btn($"Free lock-in · stop anytime · {Ledger.FmtRatio(st.FreeRatio)}:1", () => { _app.StartFree(); Rebuild(); },
             GameButton.Kind.Success, "play_arrow", c.Inner));
-        c.Controls.Add(L($"End a timed one early for {st.EarlyEndPct}% pay. Keep your phone screen off for a bonus.", 9, Theme.Muted, false, c.Inner));
+        c.Controls.Add(L($"★ = commitment bonus: 45 min+ pays extra if you finish (+{Ledger.CommitBonusPct(st, 60)}% at 1 h, +{Ledger.CommitBonusPct(st, 180)}% at 3 h). " +
+            $"End early and you get {st.EarlyEndPct}% pay, no bonus.", 9, Theme.Muted, false, c.Inner));
     }
 
     // ---------------------------------------------------------------- EARN
@@ -784,6 +792,8 @@ public class MainForm : Form
         Ratio("Lock-in: minutes per 1 min earned", st.FocusRatio, v => next.FocusRatio = v);
         Ratio("Free lock-in: minutes per 1 min earned", st.FreeRatio, v => next.FreeRatio = v);
         Rule("earlyEndPct");
+        Rule("commitBonusMaxPct");
+        Rule("commitPauseMin");
         Rule("phoneDownPct");
         Ratio("Workouts: minutes per 1 min earned", st.WorkoutRatio, v => next.WorkoutRatio = v);
         Check("Count walks as workouts", st.CountWalks, v => next.CountWalks = v);
@@ -835,7 +845,7 @@ public class MainForm : Form
         Header(rc, "Protection");
         Check("Protect Unrot (stopping it needs the PIN)", st.Protection, v => next.Protection = v);
 
-        var placed = new HashSet<string> { "earlyEndPct", "phoneDownPct", "workoutEffortPct", "maxHr", "workoutRestMin", "callRewardMin",
+        var placed = new HashSet<string> { "earlyEndPct", "commitBonusMaxPct", "commitPauseMin", "phoneDownPct", "workoutEffortPct", "maxHr", "workoutRestMin", "callRewardMin",
             "callMinMin", "callCooldownH", "stepsUnit", "stepsRewardMin", "stepsCapMin", "sleepBonusMin", "runPrBonusMin", "liftPrBonusMin",
             "liftPrCapMin", "dailyCapMin", "engagingCostPct", "streakTargetMin", "streak3Min", "streak7Min", "streak30Min", "introWaitSec" };
         var rest = NumRules.All.Where(r => !placed.Contains(r.Key)).ToList();
