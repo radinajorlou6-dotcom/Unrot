@@ -193,11 +193,13 @@ class UnrotService : AccessibilityService() {
         if (e == null || !::s.isInitialized) return
         val pkg = e.packageName?.toString() ?: return
         if (e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-            if (pkg != currentPkg && pkg !in ignoredPkgs && pkg !in imePkgs) trace("event: $pkg (${e.className?.toString()?.substringAfterLast('.')})")
+            if (pkg != currentPkg && pkg !in ignoredPkgs) trace("event: $pkg (${e.className?.toString()?.substringAfterLast('.')})")
             // Only real app screens count as switching apps. Popups, menus, toasts and
             // Unrot's own countdown pill also send this event and must be ignored.
-            if (pkg !in ignoredPkgs && pkg !in imePkgs && pkg != currentPkg &&
-                (isActivity(pkg, e.className) || activeAppPkg() == pkg)
+            // Keyboard apps are skipped (typing isn't switching apps), but only their keyboard: some apps ship
+            // a keyboard too (Snapchat does), and their real screens must still count.
+            if (pkg !in ignoredPkgs && pkg != currentPkg &&
+                (isActivity(pkg, e.className) || (pkg !in imePkgs && activeAppPkg() == pkg))
             ) {
                 onForeground(pkg)
             }
@@ -243,7 +245,7 @@ class UnrotService : AccessibilityService() {
     /** What you're doing right now, for lock-in activity: an app's name, or the website in a browser. */
     private fun focusKey(): String? {
         val pkg = currentPkg ?: return null
-        if (pkg == packageName || pkg in ignoredPkgs || pkg in imePkgs || pkg in launcherPkgs) return null
+        if (pkg == packageName || pkg in ignoredPkgs || pkg in launcherPkgs) return null
         if (pkg in URL_BAR_IDS) hostMemory[pkg]?.let { return it }
         return labelCache.getOrPut(pkg) { Recap.label(this, pkg) }
     }
@@ -432,12 +434,12 @@ class UnrotService : AccessibilityService() {
         if (System.currentTimeMillis() < recordUntil) recordDetail()
         // Every 2s, double-check which app is really in front, in case its opening was missed.
         if (ticks % 2 == 0L) activeAppPkg()?.let { p ->
-            if (p != currentPkg && p !in ignoredPkgs && p !in imePkgs) { trace("window check: $p"); onForeground(p) }
+            if (p != currentPkg && p !in ignoredPkgs) { trace("window check: $p"); onForeground(p) }
         }
         // An app hiding from the blocker (Snapchat) is still reported by Android's usage access. Only a switch
         // newer than the last one Unrot saw counts, so the two never fight.
         if (usageAllowed) usageSwitch()?.let { (p, at) ->
-            if (at > lastSwitchAt && p != currentPkg && p !in ignoredPkgs && p !in imePkgs) { trace("usage access: $p"); onForeground(p) }
+            if (at > lastSwitchAt && p != currentPkg && p !in ignoredPkgs) { trace("usage access: $p"); onForeground(p) }
         }
         if (ticks % 30 == 1L) usageAllowed = Setup.usageOn(this)
         val now = System.currentTimeMillis()
