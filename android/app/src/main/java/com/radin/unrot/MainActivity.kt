@@ -710,6 +710,43 @@ class MainActivity : Activity() {
         }.start()
     }
 
+    /** What the blocker can see: permissions, which Snapchat-like apps are blocked, and the last switches. */
+    private fun detectionCheck() {
+        val st = Rules.current(s)
+        val pm = packageManager
+        val snaps = runCatching {
+            pm.getInstalledApplications(0).filter { "snap" in it.packageName.lowercase() }
+                .joinToString("\n") { "  ${it.packageName}: " + if (it.packageName in st.flagged) "blocked" else "NOT blocked" }
+        }.getOrDefault("")
+        val lines = synchronized(UnrotService.trace) { UnrotService.trace.toList() }
+        val report = buildString {
+            appendLine("Blocker on: " + if (Setup.accessibilityOn(this@MainActivity)) "yes" else "NO")
+            appendLine("Blocker running: " + if (UnrotService.running) "yes" else "NO")
+            appendLine("Usage access: " + if (Setup.usageOn(this@MainActivity)) "yes" else "NO")
+            appendLine("Counting now: ${UnrotService.lastKeySeen}")
+            appendLine("Snap apps:\n" + snaps.ifEmpty { "  none found" })
+            appendLine()
+            appendLine("Last switches (newest first):")
+            lines.forEach { appendLine(it) }
+        }
+        val tv = android.widget.TextView(this).apply {
+            text = report
+            textSize = 12f
+            setTextColor(Col.TEXT)
+            typeface = android.graphics.Typeface.MONOSPACE
+            setPadding(dp(18), dp(8), dp(18), dp(8))
+            setTextIsSelectable(true)
+        }
+        val sv = android.widget.ScrollView(this).apply { addView(tv) }
+        dialog().setTitle("Detection check").setView(sv)
+            .setPositiveButton("Copy") { _, _ ->
+                getSystemService(android.content.ClipboardManager::class.java)
+                    .setPrimaryClip(android.content.ClipData.newPlainText("Unrot detection check", report))
+                Toast.makeText(this, "Copied. Paste it to me.", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Close", null).show()
+    }
+
     // ------------------------------------------------------------------ keeping yourself honest
 
     private fun minText(min: Long): String = when {
@@ -1558,6 +1595,9 @@ class MainActivity : Activity() {
                 propose(st.copy(bedWaitSec = v.toInt().coerceIn(0, 600)))
             }
         }
+
+        header("Help")
+        rule("Detection check", "Open") { detectionCheck() }
 
         header("Protection")
         rule("Protect Unrot's settings", if (st.protection) "On" else "Off") { propose(st.copy(protection = !st.protection)) }

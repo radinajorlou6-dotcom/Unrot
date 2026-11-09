@@ -38,6 +38,16 @@ class UnrotService : AccessibilityService() {
 
         @Volatile private var checkInAck = false
 
+        /** "Detection check": what the blocker saw lately, newest first (Settings → Detection check). */
+        val trace = java.util.ArrayDeque<String>()
+        @Volatile var lastKeySeen: String = "–"
+
+        fun trace(msg: String) = synchronized(trace) {
+            val t = java.time.LocalTime.now().withNano(0)
+            trace.addFirst("$t  $msg")
+            while (trace.size > 60) trace.removeLast()
+        }
+
         /** Bedtime "continue anyway": [NIGHT_PASS_MIN] minutes for every blocked app, saved so a restart can't lose it. */
         fun grantNightPass(ctx: android.content.Context) {
             Store.get(ctx).nightPassUntil = System.currentTimeMillis() + NIGHT_PASS_MIN * 60_000L
@@ -181,6 +191,7 @@ class UnrotService : AccessibilityService() {
         if (e == null || !::s.isInitialized) return
         val pkg = e.packageName?.toString() ?: return
         if (e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            if (pkg != currentPkg && pkg !in ignoredPkgs && pkg !in imePkgs) trace("event: $pkg (${e.className?.toString()?.substringAfterLast('.')})")
             // Only real app screens count as switching apps. Popups, menus, toasts and
             // Unrot's own countdown pill also send this event and must be ignored.
             if (pkg !in ignoredPkgs && pkg !in imePkgs && pkg != currentPkg &&
@@ -202,6 +213,8 @@ class UnrotService : AccessibilityService() {
 
     /** Called whenever a different app comes to the front. */
     private fun onForeground(pkg: String) {
+        val st0 = Rules.current(s)
+        trace("→ in front: $pkg" + if (pkg in st0.flagged) " (BLOCKED app)" else "")
         currentPkg = pkg
         lastSwitchAt = System.currentTimeMillis()
         inShorts = pkg == Settings.YOUTUBE_PKG && showsShorts(runCatching { rootInActiveWindow }.getOrNull())
@@ -379,12 +392,12 @@ class UnrotService : AccessibilityService() {
         ticks++
         // Every 2s, double-check which app is really in front, in case its opening was missed.
         if (ticks % 2 == 0L) activeAppPkg()?.let { p ->
-            if (p != currentPkg && p !in ignoredPkgs && p !in imePkgs) onForeground(p)
+            if (p != currentPkg && p !in ignoredPkgs && p !in imePkgs) { trace("window check: $p"); onForeground(p) }
         }
         // An app hiding from the blocker (Snapchat) is still reported by Android's usage access. Only a switch
         // newer than the last one Unrot saw counts, so the two never fight.
         if (usageAllowed) usageSwitch()?.let { (p, at) ->
-            if (at > lastSwitchAt && p != currentPkg && p !in ignoredPkgs && p !in imePkgs) onForeground(p)
+            if (at > lastSwitchAt && p != currentPkg && p !in ignoredPkgs && p !in imePkgs) { trace("usage access: $p"); onForeground(p) }
         }
         if (ticks % 30 == 1L) usageAllowed = Setup.usageOn(this)
         val now = System.currentTimeMillis()
@@ -421,6 +434,11 @@ class UnrotService : AccessibilityService() {
         // and picture-in-picture. Doomscrolling costs 1x however many windows; games/movies add the engaging rate.
         val usable = isScreenUsable()
         val primary = currentKey()?.takeIf { usable && isBlocked(it, st) }
+        val keyNow = currentKey() ?: "–"
+        if (keyNow != lastKeySeen) {
+            lastKeySeen = keyNow
+            trace("counting: $keyNow" + if (primary != null) " (blocked, charging time)" else if (!usable) " (screen off/locked)" else " (not blocked)")
+        }
         val others = if (usable) otherVisibleBlocked(st, primary) else emptyList()
         val visible = listOfNotNull(primary) + others.map { it.key }
         val pct = st.n("engagingCostPct") / 100.0
@@ -606,6 +624,7 @@ class UnrotService : AccessibilityService() {
             continuousSec >= nextCheckInAt && pkg !in st.halfRate -> BlockActivity.MODE_CHECKIN
             else -> null
         } ?: return
+        trace("block screen: $mode for $pkg")
         launchBlock(mode, pkg)
     }
 
