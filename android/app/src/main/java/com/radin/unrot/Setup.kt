@@ -58,6 +58,16 @@ object Setup {
             Intent(AndroidSettings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
         }
 
+    /** Usage access: lets Unrot see which app is open even when an app (like Snapchat) hides from the blocker. */
+    fun usageOn(ctx: Context): Boolean = runCatching {
+        val ops = ctx.getSystemService(android.app.AppOpsManager::class.java)
+        ops.unsafeCheckOpNoThrow(android.app.AppOpsManager.OPSTR_GET_USAGE_STATS, android.os.Process.myUid(), ctx.packageName) ==
+            android.app.AppOpsManager.MODE_ALLOWED
+    }.getOrDefault(false)
+
+    fun usageIntent(ctx: Context): Intent =
+        Intent(AndroidSettings.ACTION_USAGE_ACCESS_SETTINGS).setData(android.net.Uri.parse("package:" + ctx.packageName))
+
     fun adminOn(ctx: Context) =
         ctx.getSystemService(DevicePolicyManager::class.java).isAdminActive(adminComponent(ctx))
 

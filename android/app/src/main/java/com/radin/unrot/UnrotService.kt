@@ -203,6 +203,7 @@ class UnrotService : AccessibilityService() {
     /** Called whenever a different app comes to the front. */
     private fun onForeground(pkg: String) {
         currentPkg = pkg
+        lastSwitchAt = System.currentTimeMillis()
         inShorts = pkg == Settings.YOUTUBE_PKG && showsShorts(runCatching { rootInActiveWindow }.getOrNull())
         // Fullscreen video and picture-in-picture hide the address bar, so start from the last site
         // this browser was on; reading the address bar (when visible) corrects it.
@@ -331,6 +332,30 @@ class UnrotService : AccessibilityService() {
             ?.root?.packageName?.toString()
     }.getOrNull()
 
+    private var usageAllowed = false
+    private var lastUsageCheck = 0L
+    /** When the app in front last changed, as far as Unrot knows. */
+    private var lastSwitchAt = 0L
+
+    /**
+     * The latest app Android itself says came to the front (usage access), and when. Apps can hide their
+     * screens from accessibility services, but not from this. Null without usage access or nothing new.
+     */
+    private fun usageSwitch(): Pair<String, Long>? {
+        val now = System.currentTimeMillis()
+        val usm = getSystemService(android.app.usage.UsageStatsManager::class.java) ?: return null
+        val from = maxOf(lastUsageCheck, now - 60_000L) - 2_000L
+        val events = runCatching { usm.queryEvents(from, now) }.getOrNull() ?: return null
+        lastUsageCheck = now
+        val ev = android.app.usage.UsageEvents.Event()
+        var latest: Pair<String, Long>? = null
+        while (events.hasNextEvent()) {
+            events.getNextEvent(ev)
+            if (ev.eventType == android.app.usage.UsageEvents.Event.ACTIVITY_RESUMED) latest = ev.packageName to ev.timeStamp
+        }
+        return latest
+    }
+
     private fun isScreenUsable(): Boolean {
         val pm = getSystemService(PowerManager::class.java)
         val km = getSystemService(KeyguardManager::class.java)
@@ -356,6 +381,12 @@ class UnrotService : AccessibilityService() {
         if (ticks % 2 == 0L) activeAppPkg()?.let { p ->
             if (p != currentPkg && p !in ignoredPkgs && p !in imePkgs) onForeground(p)
         }
+        // An app hiding from the blocker (Snapchat) is still reported by Android's usage access. Only a switch
+        // newer than the last one Unrot saw counts, so the two never fight.
+        if (usageAllowed) usageSwitch()?.let { (p, at) ->
+            if (at > lastSwitchAt && p != currentPkg && p !in ignoredPkgs && p !in imePkgs) onForeground(p)
+        }
+        if (ticks % 30 == 1L) usageAllowed = Setup.usageOn(this)
         val now = System.currentTimeMillis()
         val st = Rules.current(s)
         Ledger.ensureDailyBase(s, st)

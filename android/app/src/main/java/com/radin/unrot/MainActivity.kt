@@ -1206,6 +1206,11 @@ class MainActivity : Activity() {
                 "Lets Unrot put its screen on top of TikTok and co.", "Allow",
             ) { open(Setup.overlayIntent(ctx)) },
             Step(
+                Setup.usageOn(ctx), "Usage access",
+                "Some apps (like Snapchat) hide from the blocker. This lets Unrot see which app is open anyway. Find Unrot in the list and turn it on.",
+                "Allow",
+            ) { open(runCatching { Setup.usageIntent(ctx) }.getOrElse { Intent(android.provider.Settings.ACTION_USAGE_ACCESS_SETTINGS) }) },
+            Step(
                 Setup.notificationsOn(ctx), "Notifications",
                 "For your live balance and the 1-minute warning.", "Allow",
             ) { requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_PERMS) },
