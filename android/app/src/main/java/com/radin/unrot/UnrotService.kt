@@ -183,7 +183,9 @@ class UnrotService : AccessibilityService() {
         if (e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
             // Only real app screens count as switching apps. Popups, menus, toasts and
             // Unrot's own countdown pill also send this event and must be ignored.
-            if (pkg !in ignoredPkgs && pkg !in imePkgs && pkg != currentPkg && isActivity(pkg, e.className)) {
+            if (pkg !in ignoredPkgs && pkg !in imePkgs && pkg != currentPkg &&
+                (isActivity(pkg, e.className) || activeAppPkg() == pkg)
+            ) {
                 onForeground(pkg)
             }
         }
@@ -319,6 +321,16 @@ class UnrotService : AccessibilityService() {
         }
     }
 
+    /**
+     * The app whose window is actually in front (focused app window), read straight from the screen.
+     * Some apps (Snapchat, for one) open without announcing a normal app screen, so the switch can be
+     * missed; this catches it. Popups, toasts and Unrot's pill aren't app windows, so they never count.
+     */
+    private fun activeAppPkg(): String? = runCatching {
+        windows.firstOrNull { it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION && it.isActive }
+            ?.root?.packageName?.toString()
+    }.getOrNull()
+
     private fun isScreenUsable(): Boolean {
         val pm = getSystemService(PowerManager::class.java)
         val km = getSystemService(KeyguardManager::class.java)
@@ -340,6 +352,10 @@ class UnrotService : AccessibilityService() {
 
     private fun step() {
         ticks++
+        // Every 2s, double-check which app is really in front, in case its opening was missed.
+        if (ticks % 2 == 0L) activeAppPkg()?.let { p ->
+            if (p != currentPkg && p !in ignoredPkgs && p !in imePkgs) onForeground(p)
+        }
         val now = System.currentTimeMillis()
         val st = Rules.current(s)
         Ledger.ensureDailyBase(s, st)
