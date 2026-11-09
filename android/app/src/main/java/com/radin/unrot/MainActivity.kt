@@ -739,6 +739,11 @@ class MainActivity : Activity() {
         }
         val sv = android.widget.ScrollView(this).apply { addView(tv) }
         dialog().setTitle("Detection check").setView(sv)
+            .setNeutralButton("Record 60s") { _, _ ->
+                UnrotService.recordUntil = System.currentTimeMillis() + 60_000L
+                synchronized(UnrotService.trace) { UnrotService.trace.clear() }
+                Toast.makeText(this, "Recording. Open Snapchat now for ~15 seconds, then come back here.", Toast.LENGTH_LONG).show()
+            }
             .setPositiveButton("Copy") { _, _ ->
                 getSystemService(android.content.ClipboardManager::class.java)
                     .setPrimaryClip(android.content.ClipData.newPlainText("Unrot detection check", report))
@@ -1221,7 +1226,10 @@ class MainActivity : Activity() {
         if (s.notes.isNotEmpty()) {
             group(root, "notes", R.drawable.ic_sticky_note_2, Col.INDIGO, "Night notes", "${s.notes.size} saved") { c -> notesCard(c) }
         }
-        group(root, "help", R.drawable.ic_help, Col.MUTED, "If Unrot stops stepping in", "OnePlus battery tips") { c -> helpCard(c) }
+        group(root, "help", R.drawable.ic_help, Col.MUTED, "If Unrot stops stepping in", "Detection check, OnePlus battery tips") { c ->
+            c.add(button("Detection check", Ui.Style.SECONDARY, R.drawable.ic_help) { detectionCheck() }, 12)
+            helpCard(c)
+        }
         root.add(space(10))
         root.add(text("Unrot ${runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull() ?: ""}", 12f, Col.MUTED).apply { gravity = Gravity.CENTER }, 0)
     }

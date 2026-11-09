@@ -41,11 +41,13 @@ class UnrotService : AccessibilityService() {
         /** "Detection check": what the blocker saw lately, newest first (Settings → Detection check). */
         val trace = java.util.ArrayDeque<String>()
         @Volatile var lastKeySeen: String = "–"
+        /** Detection check "record" mode: very detailed tracing until this time. */
+        @Volatile var recordUntil = 0L
 
         fun trace(msg: String) = synchronized(trace) {
             val t = java.time.LocalTime.now().withNano(0)
             trace.addFirst("$t  $msg")
-            while (trace.size > 60) trace.removeLast()
+            while (trace.size > 400) trace.removeLast()
         }
 
         /** Bedtime "continue anyway": [NIGHT_PASS_MIN] minutes for every blocked app, saved so a restart can't lose it. */
@@ -341,9 +343,46 @@ class UnrotService : AccessibilityService() {
      * missed; this catches it. Popups, toasts and Unrot's pill aren't app windows, so they never count.
      */
     private fun activeAppPkg(): String? = runCatching {
-        windows.firstOrNull { it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION && it.isActive }
-            ?.root?.packageName?.toString()
+        val w = windows.firstOrNull { it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION && it.isActive }
+            ?: return@runCatching null
+        w.root?.packageName?.toString() ?: pkgForTitle(w.title?.toString())
     }.getOrNull()
+
+    private var labelToPkg: Map<String, String> = emptyMap()
+    private var labelsAt = 0L
+
+    /** An app that hides its screen still shows its name as the window title; match it to an installed app. */
+    private fun pkgForTitle(title: String?): String? {
+        if (title.isNullOrBlank()) return null
+        val now = System.currentTimeMillis()
+        if (now - labelsAt > 10 * 60_000L) {
+            labelsAt = now
+            labelToPkg = runCatching {
+                val pm = packageManager
+                pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
+                    .associate { it.loadLabel(pm).toString().lowercase() to it.activityInfo.packageName }
+            }.getOrDefault(emptyMap())
+        }
+        return labelToPkg[title.lowercase()]
+    }
+
+    /** Detection check record mode: every window and every usage event, once a second. */
+    private fun recordDetail() {
+        val ws = runCatching { windows }.getOrNull().orEmpty().joinToString(" | ") { w ->
+            val p = runCatching { w.root?.packageName }.getOrNull() ?: "?"
+            "t${w.type}${if (w.isActive) "*" else ""}${if (w.isFocused) "f" else ""} $p \"${w.title ?: ""}\""
+        }
+        trace("windows: $ws")
+        val usm = getSystemService(android.app.usage.UsageStatsManager::class.java) ?: return
+        val now = System.currentTimeMillis()
+        val events = runCatching { usm.queryEvents(now - 1_500L, now) }.getOrNull() ?: return
+        val ev = android.app.usage.UsageEvents.Event()
+        while (events.hasNextEvent()) {
+            events.getNextEvent(ev)
+            if (ev.eventType == 1 || ev.eventType == 2 || ev.eventType == 23)
+                trace("usage ev${ev.eventType}: ${ev.packageName} ${ev.className?.substringAfterLast('.') ?: ""}")
+        }
+    }
 
     private var usageAllowed = false
     private var lastUsageCheck = 0L
@@ -390,6 +429,7 @@ class UnrotService : AccessibilityService() {
 
     private fun step() {
         ticks++
+        if (System.currentTimeMillis() < recordUntil) recordDetail()
         // Every 2s, double-check which app is really in front, in case its opening was missed.
         if (ticks % 2 == 0L) activeAppPkg()?.let { p ->
             if (p != currentPkg && p !in ignoredPkgs && p !in imePkgs) { trace("window check: $p"); onForeground(p) }
