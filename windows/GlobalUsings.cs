@@ -1,0 +1,10 @@
+// The usual WinForms set, written out because referencing WPF (for UI Automation) changes the implicit ones.
+global using System;
+global using System.Collections.Generic;
+global using System.Drawing;
+global using System.IO;
+global using System.Linq;
+global using System.Net.Http;
+global using System.Threading;
+global using System.Threading.Tasks;
+global using System.Windows.Forms;
