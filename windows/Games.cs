@@ -369,10 +369,19 @@ public static class Games
     public static (IntPtr Hwnd, BlockedSite Site)? ForegroundSite() =>
         VisibleSites().Select(x => ((IntPtr, BlockedSite)?)x).FirstOrDefault();
 
-    /// <summary>Every blocked site showing in a visible browser window (one per window: its active tab).</summary>
+    static readonly HashSet<(IntPtr, string)> _panelHits = new();
+
+    /// <summary>Was this site found in a side panel (not the window's main tab) on the last check?</summary>
+    public static bool InPanel(IntPtr hwnd, BlockedSite site) => _panelHits.Contains((hwnd, site.Domain));
+
+    /// <summary>
+    /// Every blocked site showing in a visible browser window: its main tab (from the title), plus side panels
+    /// and sidebars (from the pages actually on screen, see <see cref="PanelScan"/>).
+    /// </summary>
     public static List<(IntPtr Hwnd, BlockedSite Site)> VisibleSites()
     {
         var found = new List<(IntPtr, BlockedSite)>();
+        _panelHits.Clear();
         var sites = Rules.Current().Sites;
         foreach (var hwnd in ShownWindows())
         {
@@ -383,18 +392,39 @@ public static class Games
             var sb = new StringBuilder(512);
             GetWindowText(hwnd, sb, sb.Capacity);
             var title = sb.ToString();
-            if (title.Length == 0 || SearchPages.Any(title.Contains)) continue;
-            foreach (var site in sites)
+            var inTitle = false;
+            if (title.Length > 0 && !SearchPages.Any(title.Contains))
             {
-                var keys = (site.Keywords ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries);
-                if (keys.Any(k => title.Contains(k, StringComparison.OrdinalIgnoreCase)))
+                foreach (var site in sites)
                 {
-                    found.Add((hwnd, site));
-                    break;
+                    var keys = (site.Keywords ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries);
+                    if (keys.Any(k => title.Contains(k, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        found.Add((hwnd, site));
+                        inTitle = true;
+                        break;
+                    }
                 }
+            }
+            // Side panels / sidebars: sites showing next to the main tab.
+            foreach (var url in PanelScan.Urls(hwnd))
+            {
+                var site = sites.FirstOrDefault(x => PanelScan.Matches(url, x.Domain));
+                if (site == null || found.Any(f => f.Item1 == hwnd && f.Item2.Domain == site.Domain)) continue;
+                if (inTitle && !site.Half && found.Any(f => f.Item1 == hwnd && !f.Item2.Half)) continue;
+                found.Add((hwnd, site));
+                _panelHits.Add((hwnd, site.Domain));
             }
         }
         return found;
+    }
+
+    [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr hWnd, int cmd);
+
+    /// <summary>Minimizes a window (for a blocked site in a side panel, which Ctrl+W can't close).</summary>
+    public static void Minimize(IntPtr hwnd)
+    {
+        try { ShowWindow(hwnd, 6); } catch { }
     }
 
     /// <summary>Closes the browser tab that's showing a blocked site (Ctrl+W).</summary>

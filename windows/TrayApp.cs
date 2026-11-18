@@ -303,18 +303,21 @@ public class TrayApp : ApplicationContext
         if (!blockGame)
         {
             var s = site.Value;
+            var panel = Games.InPanel(s.Hwnd, s.Site);
+            var closes = panel ? "Close the side panel: the browser minimizes in a moment until you do." : "This tab closes in a moment.";
             var cap = st.DailyCapMin >= 60 ? $"{st.DailyCapMin / 60}h{(st.DailyCapMin % 60 > 0 ? $" {st.DailyCapMin % 60}m" : "")}" : $"{st.DailyCapMin} min";
             _block = new BlockForm(
                 focus ? "You're locked in 🔒" : capHit ? "📵 Daily doomscroll limit" : "Out of time ⏳",
                 capHit && !focus
-                    ? $"That's {cap} of doomscrolling today (phone + laptop). {s.Site.Domain} is done until midnight; games and movie sites still work. This tab closes in a moment."
-                    : $"{s.Site.Domain} is blocked right now. This tab closes in a moment.",
+                    ? $"That's {cap} of doomscrolling today (phone + laptop). {s.Site.Domain} is done until midnight; games and movie sites still work. {closes}"
+                    : $"{s.Site.Domain} is blocked right now. {closes}",
                 Store.Now - _lastClosedAt < 10 * 60_000 ? 3 : 10,
                 onExpire: () =>
                 {
-                    Games.CloseTab(s.Hwnd);
+                    if (panel) Games.Minimize(s.Hwnd); else Games.CloseTab(s.Hwnd);
                     _lastClosedAt = Store.Now;
-                    Store.AddLog($"Closed a {s.Site.Domain} tab" + (focus ? " during a lock-in" : capHit ? ", daily limit" : ", out of time"));
+                    Store.AddLog((panel ? $"Minimized the browser ({s.Site.Domain} in a side panel)" : $"Closed a {s.Site.Domain} tab") +
+                        (focus ? " during a lock-in" : capHit ? ", daily limit" : ", out of time"));
                 },
                 onLockIn: () => ShowMain());
             _block.Show();
